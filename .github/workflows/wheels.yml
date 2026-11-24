@@ -3,10 +3,9 @@
 # (configure the "pypi" environment and this workflow as a trusted publisher on pypi.org first).
 name: wheels
 
+# pushes and pull requests do not run it for now (tests run locally, incl. an AVX-512 machine, before pushing): a
+# release still builds, tests and publishes, and it can be started by hand (Actions -> wheels -> Run workflow)
 on:
-  push:
-    branches: [main]
-  pull_request:
   release:
     types: [published]
   workflow_dispatch:
