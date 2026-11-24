@@ -7,6 +7,7 @@ import uproot
 
 import akstream as aks
 from akstream import hep
+from test_vector import _numpy_uses_libm
 
 
 def _jag(rng, counts, lo, hi, dtype=np.float32):
@@ -117,6 +118,7 @@ def test_best_pair():
            "mass": _jag(rng, c, 0.0, 0.2), "charge": ak.unflatten(rng.choice([-1, 1], c.sum()), c),
            "flav": ak.unflatten(rng.choice([11, 13], c.sum()), c)}
     found, i1, i2, mass = hep.best_pair(lep, flavour=lep["flav"])
+    exact = _numpy_uses_libm()  # best_pair builds the 4-vectors with numpy, the reference with the C++ kernels
     for ev in range(n):
         f = {k: np.asarray(v[ev]) for k, v in lep.items()}
         best = (np.inf, -1, -1, 0.0)
@@ -129,7 +131,7 @@ def test_best_pair():
                 if abs(m - 91.1876) < best[0]:
                     best = (abs(m - 91.1876), a, b, m)
         assert (bool(found[ev]), int(i1[ev]), int(i2[ev])) == (best[1] >= 0, best[1], best[2]), ev
-        assert float(mass[ev]) == best[3]
+        assert float(mass[ev]) == (best[3] if exact else pytest.approx(best[3], rel=1e-9))
 
 
 def test_met_shift():

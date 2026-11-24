@@ -70,7 +70,8 @@ def np_collins_soper(mu1, mu2, charge1):
 
 
 def _numpy_uses_libm():
-    """numpy's float64 transcendental functions are the C library's (no AVX-512 SVML): then the kernels are exact."""
+    """numpy's float64 transcendental functions are the C library's: then the kernels are exact. Not on AVX-512 CPUs
+    (numpy's own SIMD sinh / arcsinh, last-ulp differences)."""
     x = np.random.default_rng(0).normal(0, 3, 2000)
     return all(np.array_equal(f(x), np.array([g(v) for v in x])) for f, g in
                ((np.cos, math.cos), (np.sin, math.sin), (np.sinh, math.sinh), (np.arcsinh, math.asinh)))
@@ -81,7 +82,8 @@ def assert_same(a, b):
     if _numpy_uses_libm():
         np.testing.assert_array_equal(a, b)
     else:  # pragma: no cover
-        np.testing.assert_allclose(a, b, rtol=1e-14, atol=1e-14)
+        # an ulp of pz grows through the cancellation in E^2 - p^2 (mass) and in the boosts (Collins-Soper angles)
+        np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-9)
 
 
 def _vectors(n, seed):
