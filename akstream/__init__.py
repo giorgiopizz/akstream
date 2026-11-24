@@ -13,6 +13,8 @@ Every awkward function is available lazily as aks.<name> (aks.sum, aks.num, aks.
 that act on each field (pad_none, fill_none, firsts, ...) also take a collection and return one. akstream.hep kernels
 take lazy columns too (hep.max_mass_pair(df.Jet), hep.pick(df.Jet.pt, idx, 0)).
 """
+from importlib import metadata as _metadata
+
 import awkward as _ak
 import numpy as _np
 
@@ -22,6 +24,11 @@ from .frame import Frame
 from .io import ArraysDataset, Dataset, Friend
 from .results import Regular, Variable
 from . import vector as _vector
+
+try:
+    __version__ = _metadata.version("akstream")
+except _metadata.PackageNotFoundError:  # a source tree that is not installed (python setup.py build_ext --inplace)
+    __version__ = "unknown"
 
 __all__ = ["read_root", "from_arrays", "compute", "varied", "apply", "onnx", "checkpoint", "checked", "Frame", "Expr", "Collection",
            "Friend", "Regular", "Variable", "last_stats", "last_failed", "zip", "p4", "collins_soper", "delta_r"]

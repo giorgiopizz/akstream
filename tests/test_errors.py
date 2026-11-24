@@ -56,3 +56,8 @@ def test_failed_result_construction_is_not_left_booked(events_file):
     assert "computed: Hist" in repr(h)
     with pytest.raises(AttributeError, match="h.value.values"):
         h.values
+
+
+def test_version():
+    import akstream as aks
+    assert isinstance(aks.__version__, str) and aks.__version__
