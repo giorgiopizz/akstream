@@ -14,7 +14,7 @@ import akstream as aks
 from akstream import hep
 
 df = aks.read_root("skims/*.root", "Events", step=500_000)
-df.vary("jes", up={("Jet", "pt"): "Jet_pt_jes_up"}, down={("Jet", "pt"): "Jet_pt_jes_down"})
+df.vary(("Jet", "pt"), up="Jet_pt_jes_up", down="Jet_pt_jes_down", name="jes")
 df["Jet"] = df.Jet[(df.Jet.pt > 25) & (abs(df.Jet.eta) < 4.7)]
 df["Jet"] = df.Jet[aks.argsort(df.Jet.pt)[:, ::-1]]
 df["ht"] = aks.sum(df.Jet.pt, axis=1)
@@ -199,19 +199,26 @@ must use the columns of the frame it is booked on; mixing columns of different s
 ## Variations
 
 ```python
-df.vary(name, up={column: alternative, ...}, down={...})     # any tag names, not only up / down
-df.vary(name, "column", up=alternative, down=alternative)    # one column
+df.vary("w", up="genWeight * pu_up", down=df.genWeight * df.pu_down, name="pu")   # any tag names, not only up / down
+df.vary(["Jet_pt", "Jet_mass"], up=["Jet_pt_jer_up", "Jet_mass_jer_up"],          # columns varied together:
+        down=["Jet_pt_jer_down", "Jet_mass_jer_down"], name="jer")                 # one alternative per column
 df.vary_branches(["Jet_pt", "Jet_mass"], ["jer", "jes_Total"], tags=("up", "down"), fmt="{column}_{syst}_{tag}")
 ```
 
-* A variation is called `"<name>:<tag>"` (`"jes:up"`).
-* `column` is a column name or a collection field `("Jet", "pt")`; an `alternative` is a branch / column name, an
-  expression string, or a lazy column.
+* The order is RDataFrame's `Vary(columns, expression, tags, variationName)`: the column(s) first, the name last. A
+  variation is called `"<name>:<tag>"` (`"jes:up"`). `name` defaults to the column name for one column (as in
+  RDataFrame) and is required for a list. Registering the same `name:tag` on a column again with a different
+  alternative is an error.
+* `column` is a column name, a collection field `("Jet", "pt")`, or a list of them; an `alternative` is a branch /
+  column name, an expression string, or a lazy column (a list of them, in the order of the columns, for a list).
+* `vary_branches` is the shortcut for variations stored as branches (NanoAOD-style, or the outputs of a skim): for
+  each systematic it varies the columns together with the branches `fmt.format(column=, syst=, tag=)`
+  (`Jet_pt_jer_up`, `Jet_mass_jer_up`); `missing="skip"` leaves out the branches that are not in the files.
 * A varied **branch** varies wherever it is read. A varied **defined column** varies from that point on (it gets a
   node of its own, so an identical expression elsewhere is not affected).
 * Everything downstream of a varied column follows: selections, sorts, collection replacements, results. Declare the
   variations of the branches **before** you select or sort the collection: `df["Jet"] = df.Jet[df.Jet.pt > 25]`
-  written before `df.vary(..., ("Jet", "pt"): ...)` selects with the nominal pt (as RDataFrame's `Vary` acts on the
+  written before `df.vary(("Jet", "pt"), ...)` selects with the nominal pt (as RDataFrame's `Vary` acts on the
   column as defined so far). Varied branches such as `Jet_pt_jes_up` are fields of the collection, so they are
   selected along with it.
 * `aks.varied(result)` makes a result's value a dict `{"nominal": ..., "<variation>": ...}` with every variation that

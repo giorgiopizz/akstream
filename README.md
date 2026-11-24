@@ -20,7 +20,7 @@ df = (df.define("mu1", aks.p4(df.mu1_pt, df.mu1_eta, df.mu1_phi, df.mu1_mass))
         .define("w", "genWeight * weight_sf_pu"))
 # variations first, so that the selections / orderings below vary too (Vary acts on the column as defined so far)
 df.vary_branches(["Jet_pt", "Jet_mass", "Jet_good", "Jet_bad"], ["jer", "jes_Regrouped_HF"])
-df.vary("pu", "w", up="genWeight * weight_sf_pu_up", down="genWeight * weight_sf_pu_down")
+df.vary("w", up="genWeight * weight_sf_pu_up", down="genWeight * weight_sf_pu_down", name="pu")
 
 # ... pandas-style assignment, awkward-style collections: the same lazy columns
 df["Jet"] = df.Jet[df.Jet.good & ~df.Jet.bad & (df.Jet.pt > 25)]   # every Jet_* field selected
@@ -79,8 +79,8 @@ df.hist("mjj", (40, 0, 4000))
 | `df.sum(col, weight)`, `df.count(weight)`, `df.groupby(key).sum(col) / .count()` | |
 | `df.collect(cols)`, `df.head(n)`, `df.peek(expr)`, `df.to_root(path, cols)` | awkward arrays / a TTree written with uproot (collections as `nX` + `X_f`) |
 | `aks.varied(df.to_root("out/{tag}/f.root", cols))` | one file per variation in the same pass (`{variation}`, `{group}`, `{tag}`; nominal = "nominal"): per chunk the nominal rows with the rows a variation changes replaced by their recomputation |
-| `df.vary(name, up={col: alt}, down=...)`, `df.vary(name, "col", up=alt, down=alt)` | variations `name:up`, `name:down` (col = a column, or `("Jet", "pt")`; alternative = branch, expression string, or lazy column); a varied branch varies wherever it is read, a varied defined column from there on |
-| `df.vary_branches(cols, systs, tags, fmt)` | NanoAOD-style `Jet_pt_<syst>_<tag>` |
+| `df.vary(col, up=alt, down=alt, name=)`, `df.vary([col, ...], up=[alt, ...], down=[...], name=)` | variations `name:up`, `name:down` (col = a column, or `("Jet", "pt")`; a list = columns varied together; alternative = branch, expression string, or lazy column; name defaults to the column for one column); a varied branch varies wherever it is read, a varied defined column from there on |
+| `df.vary_branches(cols, systs, tags, fmt)` | variations stored as branches `<col>_<syst>_<tag>` (`Jet_pt_jes_up`): one `vary(cols, name=syst)` per systematic |
 | `aks.varied(result)` | its value becomes `{"nominal": ..., "<variation>": ...}` (every variation that affects it) |
 | `aks.compute(*results, workers, validate, exact, read_ahead, ...)` | one pass; `result.value` also triggers it (for every booked result, as RDataFrame) |
 

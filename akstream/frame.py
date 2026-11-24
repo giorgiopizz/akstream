@@ -337,38 +337,51 @@ class Frame:
         return out
 
     # ------------------------------------------------------------ variations
-    def vary(self, name, column=None, **tags):
-        """register a systematic variation (as RDataFrame Vary): every result that depends on the varied columns gets
-        the variations "<name>:<tag>". Returns the frame (chainable).
+    def vary(self, column, name=None, **tags):
+        """register a systematic variation (as RDataFrame Vary): every result that depends on the varied column(s) gets
+        the variations "<name>:<tag>" (any tag names, not only up / down). Returns the frame (chainable).
 
-            df.vary("jer_4", up={"Jet_pt": "Jet_pt_jer_4_up", "Jet_mass": "Jet_mass_jer_4_up"},
-                             down={"Jet_pt": "Jet_pt_jer_4_down", "Jet_mass": "Jet_mass_jer_4_down"})
-            df.vary("pu", "w", up="w * pu_up / pu", down=df.w * df.pu_down / df.pu)
+            df.vary("w", up="genWeight * pu_up", down=df.genWeight * df.pu_down, name="pu")
+            df.vary(("Jet", "pt"), up="Jet_pt_jes_up", down="Jet_pt_jes_down", name="jes")        # a collection field
+            df.vary(["Jet_pt", "Jet_mass"], up=["Jet_pt_jer_up", "Jet_mass_jer_up"],
+                    down=["Jet_pt_jer_down", "Jet_mass_jer_down"], name="jer")                   # columns varied together
 
-            df.vary("jes", up={("Jet", "pt"): "Jet_pt_jes_up"})          # a collection field
-
-        An alternative is a branch / column name, an expression string, or a lazy column of this frame. A varied branch
-        varies everywhere it is read; a varied defined column varies from here on (it gets a node of its own, so an
-        identical expression elsewhere is not affected).
+        column: a column / branch name, a collection field ("Jet", "pt"), or a list of them varied together (each tag
+        then gives a list of alternatives, in the same order). name defaults to the column name for one column (as in
+        RDataFrame) and is required for a list. An alternative is a branch / column name, an expression string, or a
+        lazy column of this frame. A varied branch varies everywhere it is read; a varied defined column varies from
+        here on (it gets a node of its own, so an identical expression elsewhere is not affected).
         """
+        many = isinstance(column, list)
+        cols = column if many else [column]
+        if name is None:
+            if many:
+                raise TypeError("vary of several columns: give name=")
+            name = _key(column)
+        if not tags:
+            raise TypeError(f"vary {name}: give the alternatives as tags, e.g. up=..., down=...")
         for tag, alts in tags.items():
-            if column is not None:
-                alts = {column: alts}
-            if not isinstance(alts, dict):
-                raise TypeError(f"vary {name}:{tag}: give {{column: alternative}} or a column")
-            for col, alt in alts.items():
-                key = "_".join(col) if isinstance(col, tuple) else col
+            if not many:
+                alts = [alts]
+            elif not isinstance(alts, list) or len(alts) != len(cols):
+                raise TypeError(f"vary {name}:{tag}: give a list of {len(cols)} alternatives, one per column")
+            for col, alt in zip(cols, alts):
+                key = _key(col)
                 target = self[col]
                 if isinstance(alt, str):
                     alt = self[alt] if self._has(alt) else self.eval(alt)
                 if isinstance(target, Collection) or isinstance(alt, Collection):
                     raise TypeError("vary a collection field ((\"Jet\", \"pt\") or Jet_pt), not the collection")
                 if alt.space is not target.space:
-                    raise ValueError(f"vary {name}:{tag}: {col} and its alternative are in different selections")
+                    raise ValueError(f"vary {name}:{tag}: {key} and its alternative are in different selections")
                 if not isinstance(target.node, Source) and key in self._columns and not target.node.variations:
                     target = self._columns[key] = _own_node(target)  # hash-consed: shared with identical expressions
                     self._resolved.pop(key, None)
-                target.node.variations[f"{name}:{tag}"] = alt.node
+                variation = f"{name}:{tag}"
+                previous = target.node.variations.get(variation)
+                if previous is not None and previous is not alt.node:
+                    raise ValueError(f"variation {variation} of {key} is already registered (with another alternative)")
+                target.node.variations[variation] = alt.node
         return self
 
     def _has(self, name):
@@ -379,7 +392,14 @@ class Frame:
             return False
 
     def vary_branches(self, columns, systematics, tags=("up", "down"), fmt="{column}_{syst}_{tag}", missing="error"):
-        """NanoAOD-style variations: for each systematic, column -> branch fmt.format(column, syst, tag)."""
+        """NanoAOD-style variations stored as branches: for each systematic, vary the columns together, each with the
+        branch fmt.format(column=, syst=, tag=):
+
+            df.vary_branches(["Jet_pt", "Jet_mass"], ["jer", "jes_Total"])
+            # = df.vary(["Jet_pt", "Jet_mass"], up=["Jet_pt_jer_up", "Jet_mass_jer_up"],
+            #           down=["Jet_pt_jer_down", "Jet_mass_jer_down"], name="jer"), and the same for jes_Total
+
+        missing="skip" leaves out the (column, systematic, tag) whose branch is not in the files."""
         branches = self._dataset.branches
         for syst in systematics:
             per_tag = {}
@@ -394,8 +414,8 @@ class Frame:
                     alts[c] = b
                 if alts:
                     per_tag[tag] = alts
-            if per_tag:
-                self.vary(syst, **per_tag)
+            for tag, alts in per_tag.items():
+                self.vary(list(alts), name=syst, **{tag: list(alts.values())})
         return self
 
     # ------------------------------------------------------------ results
@@ -667,6 +687,11 @@ def _is_field_of(value, name, frame):
 
 def _identity(x):
     return x
+
+
+def _key(column):
+    """the column name of a column key: ("Jet", "pt") -> "Jet_pt"."""
+    return "_".join(column) if isinstance(column, tuple) else column
 
 
 def _own_node(expr):

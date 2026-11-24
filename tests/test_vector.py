@@ -175,7 +175,7 @@ def _reference(path):
 
 def test_lazy_p4_columns_selections_and_variations(dimuon_file):
     df = aks.read_root(dimuon_file, step=700)
-    df.vary("scale", up={"mu1_pt": df.mu1_pt * np.float32(1.01)}, down={"mu1_pt": df.mu1_pt * np.float32(0.99)})
+    df.vary("mu1_pt", up=df.mu1_pt * np.float32(1.01), down=df.mu1_pt * np.float32(0.99), name="scale")
     df["mu1"] = aks.p4(df.mu1_pt, df.mu1_eta, df.mu1_phi, df.mu1_mass)
     df["mu2"] = aks.p4(df.mu2_pt, df.mu2_eta, df.mu2_phi, df.mu2_mass)
     df["mll"] = (df.mu1 + df.mu2).mass

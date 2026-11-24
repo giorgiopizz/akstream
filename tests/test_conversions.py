@@ -36,12 +36,12 @@ def test_from_arrays_is_a_frame(arrays):
 
 def test_variations_and_workers_on_arrays(arrays):
     df = aks.from_arrays(arrays, step=500)
-    df.vary("jes", up={("Jet", "pt"): "Jet_pt_up"})
+    df.vary(("Jet", "pt"), up="Jet_pt_up", name="jes")
     df["ht"] = aks.sum(df.Jet.pt, axis=1)
     h = aks.varied(df.hist("ht", (20, 0, 800)))
     one, = aks.compute(h)
     df2 = aks.from_arrays(arrays, step=500)
-    df2.vary("jes", up={("Jet", "pt"): "Jet_pt_up"})
+    df2.vary(("Jet", "pt"), up="Jet_pt_up", name="jes")
     df2["ht"] = aks.sum(df2.Jet.pt, axis=1)
     two, = aks.compute(aks.varied(df2.hist("ht", (20, 0, 800))), workers=2)
     ref = np.histogram(np.asarray(ak.sum(arrays["Jet_pt_up"], axis=1)), 20, (0, 800))[0]

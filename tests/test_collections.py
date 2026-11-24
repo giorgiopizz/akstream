@@ -143,10 +143,10 @@ def test_lazy_hep_kernels(nocounter):
 def test_vary_a_field_and_a_defined_column(nocounter):
     path, raw = nocounter
     df = aks.read_root(path, step=1500)
-    df.vary("jes", up={("vJet", "pt"): "vJet_pt_up"})
+    df.vary(("vJet", "pt"), up="vJet_pt_up", name="jes")
     df["order"] = aks.local_index(df.vJet.eta)
     df["also_order"] = aks.local_index(df.vJet.eta)  # the same expression (one hash-consed node)
-    df.vary("sort", by_pt={"order": aks.argsort(df.vJet.pt)})
+    df.vary("order", by_pt=aks.argsort(df.vJet.pt), name="sort")
     df["first"] = aks.fill_none(aks.firsts(df.vJet.eta[df.order]), 0.0)
     df["first2"] = aks.fill_none(aks.firsts(df.vJet.eta[df.also_order]), 0.0)
     df["ht"] = aks.sum(df.vJet.pt, axis=1)

@@ -67,7 +67,7 @@ def test_apply_chunk_function(events_file, raw):
 
 def test_apply_under_variations_recomputes_only_changed_rows(events_file):
     df = aks.read_root(events_file, step=5000)
-    df.vary("jer4", up={"Jet_pt": "Jet_pt_jer4_up"}, down={"Jet_pt": "Jet_pt_jer4_down"})
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
     rows = []
 
     def ht(chunk):
@@ -84,7 +84,7 @@ def test_apply_under_variations_recomputes_only_changed_rows(events_file):
 def test_hists_and_vary_with_expression_strings(events_file, raw):
     df = aks.read_root(events_file, step=4000)
     df["w"] = df.genWeight * df.pu
-    df.vary("pu", "w", up="genWeight * pu_up")
+    df.vary("w", up="genWeight * pu_up", name="pu")
     hs = df.hists({"mll": (16, 70, 150), "lead": ("mu1_pt", [20, 40, 80, 200])}, weight="w", varied=True)
     out = aks.compute(*hs.values())
     mll, lead = out

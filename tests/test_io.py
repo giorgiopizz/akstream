@@ -134,8 +134,8 @@ def test_varied_to_root_one_file_per_variation(events_file, tmp_path):
         return sel
 
     df = aks.read_root(events_file, step=3_000)
-    df.vary("jer4", up={"Jet_pt": "Jet_pt_jer4_up"}, down={"Jet_pt": "Jet_pt_jer4_down"})
-    df.vary("jes", up={"Jet_pt": "Jet_pt_jes_up"})
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
+    df.vary("Jet_pt", up="Jet_pt_jes_up", name="jes")
     out = aks.varied(build(df).to_root(str(tmp_path / "out_{group}_{tag}.root"), ["ht", "lead", "jets", "event"]))
     h = aks.varied(build(df).hist("ht", (20, 0, 600)))  # alongside, in the same pass
     files, hist = aks.compute(out, h)

@@ -29,7 +29,7 @@ def build(df):
     df["mj"] = aks.fill_none(aks.firsts(jets.mass, axis=1), -1.0)
     df["score"] = aks.apply(fake_dnn, df.j1, df.j2, df.mll)
     df.vary_branches(["Jet_pt", "Jet_mass"], VARS)
-    df.vary("pu", column="w", up=df.genWeight * df.pu_up)
+    df.vary("w", up=df.genWeight * df.pu_up, name="pu")
     sel = df[df.njet >= 2]
     sel2 = sel[sel.score > 0.3]
     return {
@@ -181,7 +181,7 @@ def test_variation_attached_in_a_selection(events_file, raw):
     df = aks.read_root(events_file, step=4_000)
     df["w"] = df.genWeight * 1.0
     sel = df[df.mll > 90]
-    sel.vary("extra", column="w", up=sel.w * 2.0)
+    sel.vary("w", up=sel.w * 2.0, name="extra")
     sub = sel[sel.mu1_pt > 30]
     h = aks.varied(sub.hist("mll", bins=10, range=(70, 150), weight="w"))
     got = aks.compute(h)[0]
@@ -221,3 +221,43 @@ def test_batched_variations_match_unbatched(events_file, raw):
             else:
                 assert a == pytest.approx(b, rel=1e-12)
     check(batched, raw)
+
+
+def test_vary_forms(events_file):
+    """vary(column(s), name=, **tags): a list of columns varied together = vary_branches; name defaults to the column."""
+    def ht(df):
+        jets = df.Jet[df.Jet.pt > 25]
+        df["ht"] = aks.sum(jets.pt * jets.mass, axis=1)
+        df["w"] = df.genWeight * 1.0
+        return aks.varied(df.hist("ht", bins=20, range=(0, 4000), weight="w"))
+
+    df = aks.read_root(events_file, step=5_000)
+    df.vary_branches(["Jet_pt", "Jet_mass"], ["jer4"])
+    by_branches = ht(df)
+    df = aks.read_root(events_file, step=5_000)
+    df.vary(["Jet_pt", ("Jet", "mass")], name="jer4", up=["Jet_pt_jer4_up", "Jet_mass_jer4_up"],
+            down=[df.Jet_pt_jer4_down, "Jet_mass_jer4_down"])
+    by_list = ht(df)
+    df2 = aks.read_root(events_file, step=5_000)
+    df2.vary("genWeight", up="genWeight * 2.0")             # name defaults to the column
+    by_default = aks.varied(df2.sum("mll", weight="genWeight"))
+    (a,), (b,), (c,) = aks.compute(by_branches), aks.compute(by_list), aks.compute(by_default)
+    assert set(a) == set(b) == {"nominal", "jer4:up", "jer4:down"}
+    assert set(c) == {"nominal", "genWeight:up"} and c["genWeight:up"] == pytest.approx(2 * c["nominal"])
+    for v in a:
+        np.testing.assert_array_equal(a[v].values(), b[v].values())
+
+
+def test_vary_errors(events_file):
+    df = aks.read_root(events_file, step=5_000)
+    df["w"] = df.genWeight * 1.0
+    with pytest.raises(TypeError, match="name="):
+        df.vary(["Jet_pt", "Jet_mass"], up=["Jet_pt_jes_up", "Jet_mass_jes_up"])
+    with pytest.raises(TypeError, match="list of 2"):
+        df.vary(["Jet_pt", "Jet_mass"], up="Jet_pt_jes_up", name="jes")
+    with pytest.raises(TypeError, match="tags"):
+        df.vary("w", name="pu")
+    df.vary("w", up="genWeight * 2.0", name="pu")
+    df.vary("w", up="genWeight * 2.0", name="pu")         # the same alternative again: a no-op
+    with pytest.raises(ValueError, match="already registered"):
+        df.vary("w", up="genWeight * 3.0", name="pu")
