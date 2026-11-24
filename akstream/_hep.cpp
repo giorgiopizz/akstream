@@ -12,6 +12,12 @@
 #include <tuple>
 #include <vector>
 
+// pybind11 < 2.12 predates NumPy 2: against NumPy 2 its arrays are silently wrong (bool outputs read as garbage).
+// pip builds get a recent pybind11 from pyproject.toml; this stops a direct setup.py build on an old one (LCG_108).
+#if PYBIND11_VERSION_HEX < 0x020C0000
+#error "akstream._hep needs pybind11 >= 2.12 (NumPy 2 support): build with pip (pip install / pip wheel)"
+#endif
+
 namespace py = pybind11;
 using i64 = std::int64_t;
 
