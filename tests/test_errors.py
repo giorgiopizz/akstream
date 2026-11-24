@@ -39,3 +39,20 @@ def test_unknown_numpy_function(events_file):
     import numpy as np
     with pytest.raises(TypeError):
         np.cumsum(df.mll)
+
+
+def test_failed_result_construction_is_not_left_booked(events_file):
+    import akstream as aks
+    import pytest
+    df = aks.read_root(events_file, step=5000)
+    with pytest.raises(KeyError):
+        df.peek("no_such_column")  # a Collect that fails while it is built
+    with pytest.raises(KeyError):
+        df.collect(["mll", "no_such_column"])
+    h = df.hists({"mll": (40, 70, 110)}, weight="genWeight")["mll"]
+    assert "not computed" in repr(h)
+    assert h.value.values().sum() > 0  # the failed results did not break the pass
+    assert h[0] == h.value[0]  # indexing a result indexes its value
+    assert "computed: Hist" in repr(h)
+    with pytest.raises(AttributeError, match="h.value.values"):
+        h.values

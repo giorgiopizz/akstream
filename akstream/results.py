@@ -7,6 +7,8 @@ Histograms (and sums / counts, histograms without axes) are filled with numpy bi
 histograms are corrected per chunk: correction += fill(varied values of changed rows) - fill(nominal values of the
 same rows), and varied = nominal + correction at the end. A bin with no entry in the variation is set to exactly 0.
 """
+import functools
+
 import awkward as ak
 import numpy as np
 
@@ -121,7 +123,10 @@ class Acc:
 
 
 class Result:
-    """base class. `nodes()` are the graph nodes read; `space` the selection."""
+    """base class. `nodes()` are the graph nodes read; `space` the selection.
+
+    A result is lazy: `result.value` runs the pass (for every result booked on the dataset) and returns the value
+    (a hist.Hist, a float, an awkward array, ...); `result[...]` indexes the value."""
     variations = None  # set by aks.varied: the variation names to fill ("auto" = every one that affects the result)
 
     def __init__(self, frame):
@@ -131,6 +136,39 @@ class Result:
         self._value = None
         self._done = False
         self.dataset.booked.append(self)
+
+    def __init_subclass__(cls, **kwargs):
+        """a result whose construction fails (e.g. an unknown column) is not left booked: it would break every later
+        compute of the dataset."""
+        super().__init_subclass__(**kwargs)
+        init = cls.__dict__.get("__init__")
+        if init is None:
+            return
+
+        @functools.wraps(init)
+        def checked_init(self, *args, **kw):
+            try:
+                init(self, *args, **kw)
+            except BaseException:
+                booked = getattr(getattr(self, "dataset", None), "booked", None)
+                if booked is not None and self in booked:
+                    booked.remove(self)
+                raise
+        cls.__init__ = checked_init
+
+    def __getitem__(self, item):
+        return self.value[item]
+
+    def __getattr__(self, name):
+        # only for attributes a result does not have: no computation here (the engine probes results with hasattr)
+        if name.startswith("_"):
+            raise AttributeError(name)
+        raise AttributeError(f"{type(self).__name__!r} is a lazy akstream result and has no attribute {name!r}: "
+                             f"`.value` computes it (e.g. h.value.{name})")
+
+    def __repr__(self):
+        state = f"computed: {type(self._value).__name__}" if self._done else "not computed yet; .value computes it"
+        return f"<akstream {type(self).__name__} result, {state}>"
 
     def nodes(self):
         return []
