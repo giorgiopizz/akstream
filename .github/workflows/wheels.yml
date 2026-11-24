@@ -1,5 +1,5 @@
-# Wheels for Linux (x86_64, aarch64) and macOS (x86_64, arm64), CPython 3.10-3.13, plus the sdist; each wheel is
-# tested with the test suite. On a published GitHub release, everything is uploaded to PyPI with trusted publishing
+# Wheels for Linux (x86_64, aarch64) and macOS (arm64, and x86_64 cross-compiled on the Apple-silicon runner),
+# CPython 3.10-3.13, plus the sdist; each wheel is tested with the test suite (except the cross-compiled macOS one). On a published GitHub release, everything is uploaded to PyPI with trusted publishing
 # (configure the "pypi" environment and this workflow as a trusted publisher on pypi.org first).
 name: wheels
 
@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: pypa/cibuildwheel@v2.23.3

@@ -43,8 +43,8 @@ packages = ["akstream"]
 testpaths = ["tests"]
 
 [tool.cibuildwheel]
-# CPython 3.10-3.13 on manylinux (x86_64, aarch64) and macOS (x86_64, arm64); no PyPy / musllinux / Windows
-# (the build flags are GCC / Clang ones)
+# CPython 3.10-3.13 on manylinux (x86_64, aarch64) and macOS (arm64 native, x86_64 cross-compiled and not tested);
+# no PyPy / musllinux / Windows (the build flags are GCC / Clang ones)
 build = "cp310-* cp311-* cp312-* cp313-*"
 skip = "*-musllinux_*"
 test-extras = ["test"]
@@ -54,4 +54,6 @@ test-command = "pytest {project}/tests -q -p no:cacheprovider"
 archs = ["x86_64", "aarch64"]
 
 [tool.cibuildwheel.macos]
-archs = ["x86_64", "arm64"]
+archs = ["arm64", "x86_64"]
+test-skip = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
