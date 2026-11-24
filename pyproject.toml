@@ -52,6 +52,10 @@ test-command = "pytest {project}/tests -q -p no:cacheprovider"
 
 [tool.cibuildwheel.linux]
 archs = ["native"]  # each runner its own architecture: ubuntu-latest x86_64, ubuntu-24.04-arm aarch64 (no emulation)
+# glibc 2.28 (AlmaLinux 8): numpy, awkward-cpp, pandas and boost-histogram publish only manylinux_2_24+ / 2_28 wheels, so
+# in an older image the test step would build them from source; the wheels run on el8 / el9 / lxplus / LCG
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
 
 [tool.cibuildwheel.macos]
 archs = ["arm64", "x86_64"]

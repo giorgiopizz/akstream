@@ -11,6 +11,11 @@ on:
     types: [published]
   workflow_dispatch:
 
+# a new push cancels the run of the previous commit on the same branch (a release, a tag, is its own group)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   wheels:
     name: wheels ${{ matrix.os }}
@@ -20,7 +25,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pypa/cibuildwheel@v2.23.3
       - uses: actions/upload-artifact@v4
         with:
@@ -30,7 +35,7 @@ jobs:
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: pipx run build --sdist
       - uses: actions/upload-artifact@v4
         with:
