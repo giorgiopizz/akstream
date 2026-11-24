@@ -86,6 +86,26 @@ def assert_same(a, b):
         np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-9)
 
 
+def test_libm_kernels_are_the_c_library():
+    """_hep.cos / sin / sinh / cosh / log / atan2 / hypot: the C math library bit for bit, on any CPU (numpy's own SIMD
+    versions on AVX-512 are not), keeping the shape."""
+    import ctypes
+    import ctypes.util
+    from akstream import _hep
+    libm = ctypes.CDLL(ctypes.util.find_library("m"))  # the C library itself (Python's math.hypot is CPython's own)
+    rng = np.random.default_rng(3)
+    x, y = rng.normal(0, 4, (40, 50)), rng.normal(0, 4, (40, 50))
+    pos = np.abs(x) + 1e-3
+    for name, args in (("cos", (x,)), ("sin", (x,)), ("sinh", (x,)), ("cosh", (x,)), ("log", (pos,)),
+                       ("atan2", (y, x)), ("hypot", (x, y))):
+        c = getattr(libm, name)
+        c.restype, c.argtypes = ctypes.c_double, [ctypes.c_double] * len(args)
+        out = getattr(_hep, name)(*args)
+        assert out.shape == x.shape
+        np.testing.assert_array_equal(out, np.vectorize(c)(*args), err_msg=name)
+    assert float(_hep.cos(np.float64(0.5))) == math.cos(0.5)
+
+
 def _vectors(n, seed):
     rng = np.random.default_rng(seed)
     pt = rng.uniform(0, 200, n).astype(np.float32)

@@ -8,9 +8,10 @@ variations.
 Every function also takes lazy frame columns (and max_mass_pair a collection): the result is then lazy too (a tuple of
 lazy columns where the function returns a tuple).
 
-Floating-point results follow the plain numpy formulas (transcendental functions are evaluated with numpy; the C++
-loops only add, multiply, compare and take square roots, which are exactly rounded, built without fused multiply-add),
-so they reproduce the equivalent awkward / numpy code bit for bit.
+Floating-point results follow the plain numpy formulas (built without fused multiply-add; cos / sin / sinh / cosh /
+atan2 / hypot are the C math library's, as in ROOT), so they reproduce the equivalent awkward / numpy code bit for bit
+where numpy uses that library too (any CPU without AVX-512, whose numpy has its own SIMD versions), and the RDataFrame
+code (rdf_compatible) on any CPU.
 
     offsets, flat = hep.flat(jagged)          # ListOffsetArray -> (int64 offsets, numpy content)
     hep.nth(jagged, k, fill)                  # k-th object of each event, `fill` where there is none
@@ -251,9 +252,9 @@ def _max_mass_pair(pt, eta, phi, mass, min_mass=400.0, min_deta=2.5, min_lead_pt
     _, phi_ = flat(phi)
     _, m_ = flat(mass)
     pt64, eta64, phi64, m64 = (np.asarray(v, dtype=np.float64) for v in (pt_, eta_, phi_, m_))
-    px, py, pz = pt64 * np.cos(phi64), pt64 * np.sin(phi64), pt64 * np.sinh(eta64)
+    px, py, pz = pt64 * _hep.cos(phi64), pt64 * _hep.sin(phi64), pt64 * _hep.sinh(eta64)
     if rdf_compatible:
-        p = pt64 * np.cosh(eta64)
+        p = pt64 * _hep.cosh(eta64)
         e2 = p * p + m64 * m64
         e = np.sqrt(np.where(e2 > 0, e2, 0.0))
     else:
@@ -337,9 +338,9 @@ def best_pair(pt, eta=None, phi=None, mass=None, charge=None, target=91.1876, fl
 def _best_pair(pt, eta, phi, mass, charge, flavour, target, opposite_charge, rdf_compatible):
     offsets, _ = flat(pt)
     pt64, eta64, phi64, m64 = (np.asarray(flat(v)[1], dtype=np.float64) for v in (pt, eta, phi, mass))
-    px, py, pz = pt64 * np.cos(phi64), pt64 * np.sin(phi64), pt64 * np.sinh(eta64)
+    px, py, pz = pt64 * _hep.cos(phi64), pt64 * _hep.sin(phi64), pt64 * _hep.sinh(eta64)
     if rdf_compatible:
-        p = pt64 * np.cosh(eta64)
+        p = pt64 * _hep.cosh(eta64)
         e2 = p * p + m64 * m64
         e = np.sqrt(np.where(e2 > 0, e2, 0.0))
     else:
@@ -368,12 +369,12 @@ def met_shift(met_pt, met_phi, pt_new, pt_old, phi, mask=None):
     if mask is not None:
         d = np.where(np.asarray(flat(mask)[1], dtype=bool), d, 0.0)
     ph = np.asarray(ph, np.float64)
-    dx = per_event_sum_flat(offsets, d * np.cos(ph))
-    dy = per_event_sum_flat(offsets, d * np.sin(ph))
+    dx = per_event_sum_flat(offsets, d * _hep.cos(ph))
+    dy = per_event_sum_flat(offsets, d * _hep.sin(ph))
     mpt, mphi = np.asarray(met_pt, np.float64), np.asarray(met_phi, np.float64)
-    x = mpt * np.cos(mphi) - dx
-    y = mpt * np.sin(mphi) - dy
-    return np.hypot(x, y), np.arctan2(y, x)
+    x = mpt * _hep.cos(mphi) - dx
+    y = mpt * _hep.sin(mphi) - dy
+    return _hep.hypot(x, y), _hep.atan2(y, x)
 
 
 class LumiMask:

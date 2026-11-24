@@ -8,10 +8,11 @@
 The same code is lazy on frame columns: aks.p4(df.mu1_pt, ...) is a column whose value is a P4, so (mu1 + mu2).mass is
 a column too, and df.Muon.p4 gives the 4-vectors of a collection.
 
-The loops are C++ (akstream._hep) and follow the plain numpy formulas operation by operation (no fused multiply-add):
-where numpy evaluates cos / sin / sinh / asinh / atan2 / hypot with the C math library (any machine without AVX-512) the
-results are bit-identical to the numpy version, elsewhere within a few ulp. A P4 is a dict of its components (px, py,
-pz, e; pt, eta, phi, mass when built from them), so selections and variations handle it like any multi-column value.
+The loops are C++ (akstream._hep) and follow the plain numpy formulas operation by operation (no fused multiply-add),
+with the C math library's cos / sin / sinh / asinh / atan2 / hypot, as ROOT: bit-identical to the numpy version where
+numpy uses that library too (any CPU without AVX-512), elsewhere within a few ulp of it. A P4 is a dict of its
+components (px, py, pz, e; pt, eta, phi, mass when built from them), so selections and variations handle it like any
+multi-column value.
 """
 import awkward as ak
 import numpy as np
@@ -139,8 +140,8 @@ class RootP4(P4):
     """ROOT::Math::PtEtaPhiMVector, operation for operation (GenVector, double; ROOT's GenVector library is the reference
     implementation these formulas follow): stored as (pt, eta, phi, mass) with
     E = sqrt((pt cosh eta)^2 + m^2); a sum adds the cartesian components and converts back to (pt, eta, phi, mass), as
-    LorentzVector<PtEtaPhiM4D>::operator+ does. Use it to reproduce RDataFrame code bit for bit (numpy evaluates the
-    transcendental functions)."""
+    LorentzVector<PtEtaPhiM4D>::operator+ does. Use it to reproduce RDataFrame code bit for bit (on any CPU: the
+    transcendental functions are the C math library's, as ROOT's, not numpy's)."""
 
     @classmethod
     def from_ptetaphim(cls, pt, eta, phi, mass):
@@ -151,7 +152,7 @@ class RootP4(P4):
     def _from_ptetaphim(cls, pt, eta, phi, mass):
         offsets, (pt, eta, phi, mass) = _flatten([pt, eta, phi, mass])
         if np.any(mass < 0):  # PtEtaPhiM4D::RestrictNegMass: m < 0 is kept (space-like) unless p^2 - m^2 < 0
-            p = pt * np.cosh(eta)
+            p = pt * _hep.cosh(eta)
             mass = np.where((mass < 0) & (p * p - mass * mass < 0), -p, mass)
         outside = (phi <= -np.pi) | (phi > np.pi)  # PtEtaPhiM4D::RestrictPhi
         if np.any(outside):
@@ -171,10 +172,10 @@ class RootP4(P4):
 
     @staticmethod
     def _cartesian_root(offsets, pt, eta, phi, m):
-        p = pt * np.cosh(eta)
+        p = pt * _hep.cosh(eta)
         e2 = p * p + np.where(m >= 0, m * m, -m * m)  # PtEtaPhiM4D::E2 (M2 keeps the sign of m)
         e = np.sqrt(np.where(e2 > 0, e2, 0.0))
-        return offsets, pt * np.cos(phi), pt * np.sin(phi), pt * np.sinh(eta), e
+        return offsets, pt * _hep.cos(phi), pt * _hep.sin(phi), pt * _hep.sinh(eta), e
 
     def __getitem__(self, k):
         if k in CARTESIAN and not dict.__contains__(self, k):
@@ -192,7 +193,7 @@ class RootP4(P4):
         """0.5 log((E + pz) / (E - pz)) (LorentzVector::Rapidity)."""
         offsets, _, _, z, e = self._cart()
         with np.errstate(all="ignore"):
-            return _wrap(offsets, 0.5 * np.log((e + z) / (e - z)))
+            return _wrap(offsets, 0.5 * _hep.log((e + z) / (e - z)))
 
     def __add__(self, other):
         if not isinstance(other, RootP4):
@@ -209,11 +210,11 @@ class RootP4(P4):
         # PxPyPzE4D -> PtEtaPhiM4D: Pt, Impl::Eta_FromRhoZ, Phi, M (with the sign of M2)
         pt = np.sqrt(x * x + y * y)
         zs = z / np.where(pt > 0, pt, 1.0)
-        small = np.log(zs + np.sqrt(zs * zs + 1.0))
-        large = np.where(z > 0, np.log(2.0 * zs + 0.5 / zs), -np.log(-2.0 * zs))
+        small = _hep.log(zs + np.sqrt(zs * zs + 1.0))
+        large = np.where(z > 0, _hep.log(2.0 * zs + 0.5 / zs), -_hep.log(-2.0 * zs))
         eta = np.where(np.abs(zs) < _BIG_Z_SCALED, small, large)
         eta = np.where(pt > 0, eta, np.where(z == 0, 0.0, np.where(z > 0, z + _ETA_MAX, z - _ETA_MAX)))
-        phi = np.where((x == 0) & (y == 0), 0.0, np.arctan2(y, x))
+        phi = np.where((x == 0) & (y == 0), 0.0, _hep.atan2(y, x))
         m2 = t * t - x * x - y * y - z * z
         m = np.where(m2 >= 0, np.sqrt(np.abs(m2)), -np.sqrt(np.abs(m2)))
         return RootP4({k: _wrap(o1, v) for k, v in zip(("pt", "eta", "phi", "mass"), (pt, eta, phi, m))})

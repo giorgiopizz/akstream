@@ -143,8 +143,8 @@ bit-identical to the equivalent awkward code (dtype promotion included):
 
 `vector.p4(pt, eta, phi, m)` (per event or jagged per object), sums, `.mass / .pt / .eta / .phi` computed only when
 used, `vector.collins_soper(l1, l2, charge1)`, `delta_phi`, `delta_r`; one C++ loop each, the same formulas as the
-plain numpy code operation by operation (bit-identical where numpy uses the C math library, i.e. without AVX-512
-SVML). A `P4` is a dict of its components, so it travels through selections and variations like any column; lazily
+plain numpy code operation by operation, with the C math library's cos / sin / sinh / asinh / atan2 (as ROOT):
+bit-identical to numpy where numpy uses that library too (without AVX-512, where numpy has its own SIMD versions). A `P4` is a dict of its components, so it travels through selections and variations like any column; lazily
 it is `aks.p4(...)` / `collection.p4`. The scikit-hep `vector` package was measured first: its numpy, awkward and numba
 backends are no faster than hand-written numpy on these operations (the cost is cos / sin / sinh, which nothing avoids)
 and do not reproduce the numpy formulas' rounding; the gain here is the Collins-Soper frame (one loop instead of ~60
@@ -153,7 +153,7 @@ temporaries) and not computing the eta / phi of sums that are not used.
 `rdf_compatible=True` (`vector.RootP4`, and `hep.max_mass_pair(..., rdf_compatible=True)`) reproduces ROOT's
 `PtEtaPhiMVector` arithmetic instead (ROOT GenVector is the reference implementation of these formulas): E from
 pt cosh(eta), sums converted back to (pt, eta, phi, m), negative masses and phi ranges as GenVector. Bit-identical to
-ROOT 6.40; ROOT 6.36 evaluates GenVector with fused multiply-adds on CPUs that have them, ~1e-16 relative, which
+ROOT 6.40 on any CPU (the transcendental functions are the C math library's, not numpy's); ROOT 6.36 evaluates GenVector with fused multiply-adds on CPUs that have them, ~1e-16 relative, which
 disappears once the result is stored as float.
 
 **Build.** `pip install akstream` installs a prebuilt wheel where one exists (Linux x86_64 / aarch64, macOS); otherwise
@@ -168,7 +168,7 @@ differently) so its floating point matches numpy exactly.
 ## Tests
 
     pip install -e .[test,onnx]
-    pytest                                   # 163 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
+    pytest                                   # 169 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
 
 The tests that compare with ROOT itself (GenVector arithmetic) run when PyROOT is importable and are skipped otherwise.
 

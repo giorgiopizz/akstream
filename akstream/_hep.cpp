@@ -1,14 +1,16 @@
 // akstream._hep: the event loops of akstream.hep in C++.
 //
 // Every kernel works on the flat contents of jagged arrays and their int64 offsets (starting at 0). The arithmetic
-// follows the numpy formulations operation by operation (no fused multiply-add: built with -ffp-contract=off), so the
-// results are bit-identical to the equivalent awkward / numpy code.
+// follows the numpy formulations operation by operation (no fused multiply-add: built with -ffp-contract=off), with the
+// C math library's cos / sin / sinh / asinh / atan2 / hypot: the results are bit-identical to the equivalent numpy code
+// wherever numpy uses that library too (any CPU without AVX-512), and to the RDataFrame code everywhere.
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
 #include <tuple>
 #include <vector>
 
@@ -331,6 +333,45 @@ py::tuple p4_cartesian(carray<double> pt, carray<double> eta, carray<double> phi
     return py::make_tuple(px, py_, pz, e);
 }
 
+// the C math library, elementwise (any shape): numpy's own SIMD versions (on AVX-512 CPUs) round differently from it,
+// and the RDataFrame code these formulas reproduce calls it
+template <double (*F)(double)>
+py::array_t<double> libm1(carray<double> x) {
+    py::array_t<double> out(x.request().shape);
+    const double *a = x.data();
+    double *r = out.mutable_data();
+    const i64 n = x.size();
+    {
+        py::gil_scoped_release release;
+        for (i64 i = 0; i < n; ++i) r[i] = F(a[i]);
+    }
+    return out;
+}
+
+template <double (*F)(double, double)>
+py::array_t<double> libm2(carray<double> x, carray<double> y) {
+    if (x.size() != y.size()) throw std::invalid_argument("arrays of different sizes");
+    py::array_t<double> out(x.request().shape);
+    const double *a = x.data(), *b = y.data();
+    double *r = out.mutable_data();
+    const i64 n = x.size();
+    {
+        py::gil_scoped_release release;
+        for (i64 i = 0; i < n; ++i) r[i] = F(a[i], b[i]);
+    }
+    return out;
+}
+
+namespace {
+double cos_(double x) { return std::cos(x); }
+double sin_(double x) { return std::sin(x); }
+double sinh_(double x) { return std::sinh(x); }
+double cosh_(double x) { return std::cosh(x); }
+double log_(double x) { return std::log(x); }
+double atan2_(double y, double x) { return std::atan2(y, x); }
+double hypot_(double x, double y) { return std::hypot(x, y); }
+}  // namespace
+
 // m = sqrt(|E^2 - p^2|) with the sign of E^2 - p^2 (ROOT's convention for space-like vectors)
 py::array_t<double> p4_mass(carray<double> px, carray<double> py_, carray<double> pz, carray<double> e) {
     const i64 n = px.size();
@@ -446,6 +487,13 @@ PYBIND11_MODULE(_hep, m) {
     m.def("match_dr", &match_dr);
     m.def("ancestor", &ancestor);
     m.def("best_pair", &best_pair);
+    m.def("cos", &libm1<cos_>);
+    m.def("sin", &libm1<sin_>);
+    m.def("sinh", &libm1<sinh_>);
+    m.def("cosh", &libm1<cosh_>);
+    m.def("log", &libm1<log_>);
+    m.def("atan2", &libm2<atan2_>);
+    m.def("hypot", &libm2<hypot_>);
     m.def("p4_cartesian", &p4_cartesian);
     m.def("p4_mass", &p4_mass);
     m.def("p4_angles", &p4_angles);

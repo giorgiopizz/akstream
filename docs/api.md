@@ -357,8 +357,11 @@ The results reproduce the awkward code bit for bit, dtype promotion included.
 * 4-vectors (`aks.p4`, `coll.p4`) and `hep.max_mass_pair` use ROOT's `PtEtaPhiMVector` arithmetic: E from
   pt·cosh η, sums converted back to (pt, η, φ, m), GenVector's negative-mass and φ-range rules, `.rapidity`.
 
-Without it, results differ from RDataFrame only in the last bits. ROOT 6.40 is reproduced exactly; ROOT 6.36
-(LCG_108) builds GenVector with fused multiply-adds, ~1e-16 relative, invisible once stored as float.
+Without it, results differ from RDataFrame only in the last bits. ROOT 6.40 is reproduced exactly, on any CPU: the
+4-vectors and `hep` functions call the C math library's cos / sin / sinh / cosh / log / atan2, as ROOT does. numpy
+functions in your own expressions (`np.sinh(eta)`, `"cosh(x)"`) are numpy's: on CPUs with AVX-512, numpy uses its own
+SIMD versions there, which can differ from C++ in the last bit. ROOT 6.36 (LCG_108) builds GenVector with fused
+multiply-adds, ~1e-16 relative, invisible once stored as float.
 
 ## Rules
 
