@@ -334,7 +334,7 @@ Single-pass versions of common jagged operations. They take awkward arrays (insi
 
 | function | equivalent awkward code |
 |---|---|
-| `hep.nth(x, k, fill)` | `ak.fill_none(ak.pad_none(x, k + 1)[:, k], fill)`: the k-th object of each event |
+| `hep.nth(x, k, fill)` | `ak.fill_none(ak.pad_none(x, k + 1)[:, k], fill)`: the k-th object of each event. `x` a collection or jagged 4-vectors: the k-th 4-vector (`fill` a number for each of pt, η, φ, m, or `aks.p4(0, 0, 0, 0)`), e.g. `mjj = (hep.nth(df.Jet, 0, fill=0.0) + hep.nth(df.Jet, 1, fill=0.0)).mass` |
 | `hep.pick(x, index, fill)` | the object at a per-event index (`fill` where the index is < 0 or out of range) |
 | `hep.count(mask)` | `ak.sum(mask, axis=1)` |
 | `hep.per_event_sum(x, mask=None)` | `ak.sum(x[mask], axis=1)`, in the values' own type |

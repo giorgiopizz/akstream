@@ -74,7 +74,7 @@ functions, which a loop does not avoid.
 
 ## Tests
 
-`tests/` (169 tests, synthetic NanoAOD-like trees written in `conftest.py`): each feature against plain awkward /
+`tests/` (177 tests, synthetic NanoAOD-like trees written in `conftest.py`): each feature against plain awkward /
 numpy on the same data; variations against brute-force recomputation; the ROOT-compatibility tests against ROOT
 itself when it is importable (skipped otherwise). `test_collections.py` covers the collection API, `test_api.py` the
 chain API, `test_vector.py` 4-vectors and RDataFrame compatibility, `test_jagged.py` the fast paths, `test_conversions.py`

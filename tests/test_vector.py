@@ -253,6 +253,48 @@ def test_p4_extra_fields(rdf):
         vector.p4(jpt, jeta, jeta, jpt * 0, rdf, charge=ak.Array([[1], [], [1]]))
 
 
+@pytest.mark.parametrize("rdf", [False, True])
+def test_nth_of_4vectors(rdf):
+    from akstream import hep
+    rng = np.random.default_rng(4)
+    c = rng.integers(0, 4, 500)
+    jag = lambda lo, hi: ak.unflatten(rng.uniform(lo, hi, c.sum()).astype(np.float32), c)  # noqa: E731
+    pt, eta, phi, m = jag(20, 200), jag(-4.7, 4.7), jag(-np.pi, np.pi), jag(1, 20)
+    v = vector.p4(pt, eta, phi, m, rdf, flav=ak.values_astype(pt > 50, np.int32))
+    for k, fill, fv in ((0, 0.0, (0.0,) * 4), (1, aks.p4(10.0, 1.0, 0.5, 2.0), (10.0, 1.0, 0.5, 2.0))):
+        got = hep.nth(v, k, fill=fill)
+        assert type(got) is type(v)
+        ref = vector.p4(*(ak.to_numpy(ak.fill_none(ak.pad_none(x, k + 1)[:, k], f)).astype(np.float64)
+                          for x, f in zip((pt, eta, phi, m), fv)), rdf)
+        for f in ("pt", "eta", "phi", "mass", "px", "e"):
+            np.testing.assert_array_equal(getattr(got, f), getattr(ref, f), err_msg=f"{k} {f}")
+        np.testing.assert_array_equal(got.flav, ak.to_numpy(ak.fill_none(ak.pad_none(v.flav, k + 1)[:, k], 0)))
+    if not rdf:  # a sum of jagged vectors (cartesian components only): its k-th cartesian components
+        s = v + v
+        got, ref = hep.nth(s, 1, fill=0.0), hep.nth(v, 1, fill=0.0) + hep.nth(v, 1, fill=0.0)
+        for f in ("px", "pz", "e", "mass"):
+            np.testing.assert_array_equal(getattr(got, f), getattr(ref, f), err_msg=f)
+    with pytest.raises(TypeError, match="4-vector fill"):
+        hep.nth(pt, 0, fill=aks.p4(0, 0, 0, 0))
+
+
+@pytest.mark.parametrize("rdf", [False, True])
+def test_lazy_nth_of_a_collection(dimuon_file, rdf):
+    """the leading-pair VBF variables from hep.nth(df.Jet, k), against building the vectors from the components."""
+    from akstream import hep
+    df = aks.read_root(dimuon_file, rdf_compatible=rdf)
+    df["Jet"] = df.Jet[df.Jet.pt > 30]
+    df["Jet"] = df.Jet[aks.argsort(df.Jet.pt, axis=1, ascending=False)]
+    j1, j2 = (hep.nth(df.Jet, i, fill=aks.p4(0, 0, 0, 0)) for i in (0, 1))
+    c1, c2 = (aks.p4(*(hep.nth(getattr(df.Jet, f), i, fill=0.0) for f in ("pt", "eta", "phi", "mass")))
+              for i in (0, 1))
+    got = {k: df.peek(e, n=10 ** 6) for k, e in (("mjj", (j1 + j2).mass), ("ref", (c1 + c2).mass),
+                                                 ("deta", abs(j1.eta - j2.eta)), ("deta_ref", abs(c1.eta - c2.eta)))}
+    np.testing.assert_array_equal(np.asarray(got["mjj"]), np.asarray(got["ref"]))
+    np.testing.assert_array_equal(np.asarray(got["deta"]), np.asarray(got["deta_ref"]))
+    assert (np.asarray(got["mjj"]) > 0).sum() > 100
+
+
 def test_lazy_p4_extra_fields(dimuon_file):
     """the user's dimuon selection with mu1.pdgId * mu2.pdgId < 0, under a variation, against numpy."""
     df = aks.read_root(dimuon_file, step=700)

@@ -129,7 +129,7 @@ bit-identical to the equivalent awkward code (dtype promotion included):
 
 | | replaces |
 |---|---|
-| `hep.nth(x, k, fill)`, `hep.pick(x, index, fill)` | `ak.fill_none(ak.pad_none(x, k + 1)[:, k], fill)`, `ak.firsts(x[local == index])` |
+| `hep.nth(x, k, fill)`, `hep.pick(x, index, fill)` | `ak.fill_none(ak.pad_none(x, k + 1)[:, k], fill)`, `ak.firsts(x[local == index])`; `hep.nth(df.Jet, 0, fill=0.0)` (a collection or jagged 4-vectors) is the k-th 4-vector |
 | `hep.select_sort(keep, key, *fields)` | `x[keep][ak.argsort(key[keep], ascending=False, stable=True)]` for every field |
 | `hep.count(mask)`, `hep.per_event_sum(x, mask)` | `ak.sum(mask, axis=1)`, `ak.sum(ak.where(mask, x, 0), axis=1)` |
 | `hep.isolated(eta, phi, refs, min_dr2)`, `hep.between(x, lo, hi)` | Delta R cleaning against per-event directions, per-event bounds |
@@ -168,7 +168,7 @@ differently) so its floating point matches numpy exactly.
 ## Tests
 
     pip install -e .[test,onnx]
-    pytest                                   # 169 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
+    pytest                                   # 177 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
 
 The tests that compare with ROOT itself (GenVector arithmetic) run when PyROOT is importable and are skipped otherwise.
 
