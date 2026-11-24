@@ -227,8 +227,8 @@ Evaluation: per chunk, each variation is recomputed only on the rows where it ch
 
 | | value |
 |---|---|
-| `df.hist(x, bins, range=, weight=, name=)` | `hist.Hist` with Weight storage. `x`: a column or an expression string; a jagged `x` fills one entry per object. `bins`: `(n, lo, hi)`, a list of edges, `aks.Regular(n, lo, hi)`, `aks.Variable(edges)`, or a `hist` axis; or `bins=n, range=(lo, hi)` |
-| `df.hist([x, y, z], axes=[...], weight=)` | an n-dimensional histogram |
+| `df.hist(x, bins, range=, weight=, name=)` | `hist.Hist` with Weight storage. `x`: a column or an expression string; a jagged `x` fills one entry per object. `bins`: `(n, lo, hi)`, a list of edges, `aks.Regular(n, lo, hi)`, `aks.Variable(edges)`, `aks.IntCategory([0, 1, 2])`, or a `hist` Regular / Variable / IntCategory axis; or `bins=n, range=(lo, hi)`. An IntCategory axis needs an integer (or bool) column (a float one is refused, as boost-histogram); values that are not a category go to its overflow bin |
+| `df.hist([x, y, z], axes=[...], weight=)` | an n-dimensional histogram, one axis per column (each in any of the forms above), e.g. `axes=[(80, 70, 150), [0, 1, 2, 5], aks.IntCategory([0, 1, 2])]`; per-event columns are repeated for each object of a jagged one |
 | `df.hists({name: binning or (column, binning)}, weight=, varied=)` | `{name: result}` |
 | `df.sum(column, weight=)`, `df.count(weight=)` | a float |
 | `df.groupby(key).sum(column, weight=)`, `.count()` | `{key value: total}` |
@@ -367,6 +367,8 @@ Without it, results differ from RDataFrame only in the last bits. ROOT 6.40 is r
   `np.cumsum`) are refused at run time; totals are results (`df.sum`, `df.hist`). This is what makes partial
   recomputation under variations exact.
 * A lazy column has no truth value and no length: use `& | ~` and `aks.where`, not `and` / `or` / `if`.
+* Indexing follows awkward, also in expression strings: element *i* of every row is `x[:, i]`
+  (`"weight * LHEPdfWeight[:, 3]"`); `x[3]` would be row 3 (not row-local: refused).
 * User functions (`apply`) must be row-local and deterministic, and return one entry per input row.
 
 ## Not supported yet
@@ -375,5 +377,6 @@ Without it, results differ from RDataFrame only in the last bits. ROOT 6.40 is r
   belong in `define("x", "...")`), but nothing downstream handles text yet: `hist`, `to_root` and comparisons fail
   on it. The plan: string constants and per-event string columns as numpy `<U` arrays (comparisons such as
   `df.sample == "DY"`), written by `to_root` as awkward strings (uproot writes those to a TTree), a string-category
-  axis for `df.hist` (`hist.axis.StrCategory`: a process or region axis), string keys in `groupby`, string branches
+  axis for `df.hist` (`hist.axis.StrCategory`: a process or region axis; integer categories already work with
+  `aks.IntCategory`), string keys in `groupby`, string branches
   read from files; for heavy per-event use, pandas-style categoricals (integer codes + labels).

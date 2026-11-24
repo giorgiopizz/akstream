@@ -23,7 +23,7 @@ from .engine import compute, last_failed, last_stats, varied
 from .expr import Collection, Expr, call, zip_record
 from .frame import Frame
 from .io import ArraysDataset, Dataset, Friend
-from .results import Regular, Variable
+from .results import IntCategory, Regular, Variable
 from . import vector as _vector
 
 try:
@@ -32,7 +32,7 @@ except _metadata.PackageNotFoundError:  # a source tree that is not installed (p
     __version__ = "unknown"
 
 __all__ = ["read_root", "from_arrays", "compute", "varied", "apply", "onnx", "checkpoint", "checked", "Frame", "Expr", "Collection",
-           "Friend", "Regular", "Variable", "last_stats", "last_failed", "zip", "p4", "collins_soper", "delta_r"]
+           "Friend", "IntCategory", "Regular", "Variable", "last_stats", "last_failed", "zip", "p4", "collins_soper", "delta_r"]
 
 
 def read_root(files, tree="Events", step=200_000, entry_start=0, entry_stop=None, threads=0, friends=None,

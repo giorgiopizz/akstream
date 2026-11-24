@@ -77,7 +77,7 @@ df.hist("mjj", (40, 0, 4000))
 | `aks.checked(value, condition, message)` | `value`, with `ValueError(message)` if `condition` fails on a row |
 | `df.apply(fn, columns, outputs=, when=, prefix=, **kw)` | `fn(chunk dict, **kw) -> dict`: a new frame with its outputs as columns |
 | `aks.apply(fn, *cols, when=)`, `aks.onnx(path, cols)` | row-local user functions of columns / ONNX models (treated as expensive) |
-| `df.hist(x, (n, lo, hi) / edges / axis, weight)`, `df.hists({name: binning}, weight, varied)` | `hist.Hist` (Weight storage); x a column or expression string; jagged x fills per object |
+| `df.hist(x, (n, lo, hi) / edges / axis, weight)`, `df.hist([x, y, ...], axes=[...])`, `df.hists({name: binning}, weight, varied)` | `hist.Hist` (Weight storage), any number of dimensions; axes `aks.Regular`, `aks.Variable`, `aks.IntCategory` (or the hist ones); x a column or expression string; jagged x fills per object |
 | `df.sum(col, weight)`, `df.count(weight)`, `df.groupby(key).sum(col) / .count()` | |
 | `df.collect(cols)`, `df.head(n)`, `df.peek(expr)`, `df.to_root(path, cols)` | awkward arrays / a TTree written with uproot (collections as `nX` + `X_f`) |
 | `aks.varied(df.to_root("out/{tag}/f.root", cols))` | one file per variation in the same pass (`{variation}`, `{group}`, `{tag}`; nominal = "nominal"): per chunk the nominal rows with the rows a variation changes replaced by their recomputation |

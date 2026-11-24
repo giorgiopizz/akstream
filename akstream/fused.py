@@ -619,9 +619,7 @@ def fill_corrections(results, states, ctx, sub, changed, variation):
 
 
 def _axis_key(a):
-    if hasattr(a, "edges"):
-        return ("v",) + tuple(a.edges.tolist())
-    return ("r", a.bins, a.start, a.stop, getattr(a, "convention", "boost"))
+    return a.key()
 
 
 def _grouped_fill(hists, accs, side, rows_of, values_at, sign, cache):

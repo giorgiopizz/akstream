@@ -49,6 +49,9 @@ class Regular:
     def size(self):
         return self.bins + 2
 
+    def key(self):
+        return ("r", self.bins, self.start, self.stop, self.convention)
+
     def to_hist(self, default="x"):
         import hist
         return hist.axis.Regular(self.bins, self.start, self.stop, name=self.name or default, label=self.label)
@@ -69,14 +72,62 @@ class Variable:
     def size(self):
         return len(self.edges) + 1
 
+    def key(self):
+        return ("v",) + tuple(self.edges.tolist())
+
     def to_hist(self, default="x"):
         import hist
         return hist.axis.Variable(self.edges, name=self.name or default, label=self.label)
 
 
+class IntCategory:
+    """integer categories (as hist.axis.IntCategory): one bin per category, in the given order, plus an overflow bin
+    for every other value."""
+
+    def __init__(self, categories, name=None, label=None):
+        self.categories = np.asarray(categories, np.int64).reshape(-1)
+        if len(np.unique(self.categories)) != len(self.categories):
+            raise ValueError(f"IntCategory: repeated categories in {self.categories.tolist()}")
+        self.name, self.label = name, label
+        self._order = np.argsort(self.categories, kind="stable")
+        self._sorted = self.categories[self._order]
+
+    def values(self, x):
+        """the column as int64; a float column is refused (as boost-histogram), not truncated."""
+        x = np.asarray(x)
+        if x.dtype.kind not in "iub":
+            raise TypeError(f"IntCategory axis {self.name or ''}: needs an integer (or bool) column, got {x.dtype} "
+                            "(cast it, e.g. aks.values_astype(x, np.int64), or bin it with a Regular / Variable axis)")
+        return x.astype(np.int64, copy=False)
+
+    def index(self, x):
+        x = self.values(x)
+        n = len(self.categories)
+        if n == 0:
+            return np.zeros(x.shape, np.int64)
+        pos = np.minimum(np.searchsorted(self._sorted, x), n - 1)
+        out = self._order[pos].astype(np.int64)
+        out[self._sorted[pos] != x] = n  # not a category: overflow
+        return out
+
+    @property
+    def size(self):
+        return len(self.categories) + 1
+
+    def key(self):
+        return ("c",) + tuple(self.categories.tolist())
+
+    def to_hist(self, default="x"):
+        import hist
+        return hist.axis.IntCategory(self.categories.tolist(), name=self.name or default, label=self.label)
+
+
+AXES = (Regular, Variable, IntCategory)
+
+
 def make_axis(bins=None, range=None, edges=None, name=None, axis=None):
     if axis is not None:
-        return _from_hist_axis(axis) if not isinstance(axis, (Regular, Variable)) else axis
+        return _from_hist_axis(axis) if not isinstance(axis, AXES) else axis
     if edges is not None:
         return Variable(edges, name)
     if isinstance(bins, (list, tuple, np.ndarray)):
@@ -93,7 +144,11 @@ def _from_hist_axis(a):
         return Regular(a.size, a.edges[0], a.edges[-1], getattr(a, "name", None))
     if isinstance(a, (bh.axis.Regular, bh.axis.Variable)):
         return Variable(a.edges, getattr(a, "name", None))
-    raise TypeError(f"unsupported axis {a!r}: Regular or Variable")
+    if isinstance(a, bh.axis.IntCategory):
+        if a.traits.growth or not a.traits.overflow:
+            raise TypeError(f"unsupported axis {a!r}: an IntCategory with an overflow bin and no growth")
+        return IntCategory(list(a), getattr(a, "name", None), getattr(a, "label", None))
+    raise TypeError(f"unsupported axis {a!r}: Regular, Variable or IntCategory (StrCategory needs string columns)")
 
 
 # ---------------------------------------------------------------- accumulators
@@ -243,6 +298,8 @@ def _boost_axis(a):
         return bh.axis.Variable(a.edges)
     if isinstance(a, Regular) and a.convention == "boost":
         return bh.axis.Regular(a.bins, a.start, a.stop)
+    if isinstance(a, IntCategory):
+        return bh.axis.IntCategory(a.categories.tolist(), overflow=True)
     return None
 
 
@@ -252,8 +309,7 @@ _BOOST_CACHE = {}
 def _boost_hists(axes, ntargets):
     """(Weight-storage, Int64-storage) boost histograms with a leading target axis, cached and reset; None when an
     axis has no boost equivalent."""
-    key = (tuple(("v", tuple(a.edges)) if isinstance(a, Variable) else ("r", a.bins, a.start, a.stop, a.convention)
-                 for a in axes), ntargets)
+    key = (tuple(a.key() for a in axes), ntargets)
     hit = _BOOST_CACHE.get(key)
     if hit is None:
         import boost_histogram as bh
@@ -299,6 +355,7 @@ def accumulate(axes, columns, weight, target=None, ntargets=1, n=None):
     size = int(np.prod([a.size for a in axes])) if axes else 1
     total = size * ntargets
     flat, w, counts = _flat_columns(columns, weight)
+    flat = [a.values(x) if isinstance(a, IntCategory) else x for a, x in zip(axes, flat)]
     if target is not None and counts is not None:
         target = np.repeat(target, counts)
     rows = len(flat[0]) if flat else (len(w) if w is not None else int(n or 0))

@@ -2,7 +2,12 @@
 import boost_histogram as bh
 import numpy as np
 
-from akstream.results import Regular, Variable
+import awkward as ak
+import hist
+import pytest
+
+import akstream as aks
+from akstream.results import IntCategory, Regular, Variable
 
 
 def boost_index(axis, x):
@@ -57,3 +62,42 @@ def test_accumulate_boost_path_equals_numpy_path():
     np.testing.assert_array_equal(count, np.bincount(idx, minlength=4 * size))
     np.testing.assert_allclose(sumw, np.bincount(idx, weights=ww, minlength=4 * size), rtol=1e-13, atol=1e-13)
     np.testing.assert_allclose(sumw2, np.bincount(idx, weights=ww * ww, minlength=4 * size), rtol=1e-13, atol=1e-13)
+
+
+def test_intcategory_matches_boost():
+    cats = [3, 0, 7, -2]  # unsorted: the bins follow the given order, as boost
+    x = np.array([0, 3, 7, -2, 1, 8, -5, 3])
+    np.testing.assert_array_equal(IntCategory(cats).index(x), boost_index(bh.axis.IntCategory(cats), x))
+    np.testing.assert_array_equal(IntCategory([0, 1]).index(np.array([True, False])), [1, 0])
+    with pytest.raises(TypeError, match="integer"):
+        IntCategory(cats).index(np.array([3.0, 3.5]))  # a float column is refused (as boost), not truncated
+    with pytest.raises(ValueError, match="repeated"):
+        IntCategory([1, 1])
+    with pytest.raises(TypeError, match="growth"):
+        aks.results.make_axis(axis=hist.axis.IntCategory([], growth=True))
+
+
+@pytest.mark.parametrize("convention", ["boost", "root"])  # root: no boost equivalent, every axis binned by numpy
+def test_nd_hist_axes(events_file, convention):
+    """an n-dim histogram with (n, lo, hi), a list of edges, aks.IntCategory and a hist IntCategory axis (per-jet columns
+    next to per-event ones), nominal and under a sparse jet variation, equals hist filled on the full arrays."""
+    df = aks.read_root(events_file, step=3_000)
+    df["njet"] = aks.num(df.Jet.pt[df.Jet.pt > 30], axis=1)
+    df["cat"] = df.event % 4
+    df["cat2"] = (df.event // 7) % 3
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", name="jer4")
+    h = aks.varied(df.hist(["mll", "njet", "cat", "cat2", "Jet_pt"],
+                           axes=[Regular(8, 70, 150, convention=convention), [0, 1, 2, 4], aks.IntCategory([2, 0, 1]),
+                                 hist.axis.IntCategory([0, 1]), (5, 0, 250)], weight="genWeight"))
+    got, = aks.compute(h)
+    a = aks.read_root(events_file).collect(["mll", "event", "genWeight", "Jet_pt", "Jet_pt_jer4_up"]).value
+    for v, pt in (("nominal", a.Jet_pt), ("jer4:up", a.Jet_pt_jer4_up)):
+        njet = ak.num(pt[pt > 30], axis=1)
+        b = ak.broadcast_arrays(a.mll, njet, a.event % 4, (a.event // 7) % 3, pt, a.genWeight)
+        x = [ak.to_numpy(ak.flatten(c)) for c in b]
+        ref = hist.Hist(hist.axis.Regular(8, 70, 150), hist.axis.Variable([0, 1, 2, 4]), hist.axis.IntCategory([2, 0, 1]),
+                        hist.axis.IntCategory([0, 1]), hist.axis.Regular(5, 0, 250), storage=hist.storage.Weight())
+        ref.fill(*x[:5], weight=x[5])
+        assert isinstance(got[v].axes[2], hist.axis.IntCategory) and list(got[v].axes[2]) == [2, 0, 1]
+        np.testing.assert_allclose(got[v].view(flow=True).value, ref.view(flow=True).value, rtol=1e-12, atol=1e-9)
+        np.testing.assert_allclose(got[v].view(flow=True).variance, ref.view(flow=True).variance, rtol=1e-12, atol=1e-9)

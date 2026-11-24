@@ -406,7 +406,8 @@ class Frame:
     def hist(self, x, bins=None, range=None, weight=None, edges=None, axes=None, name=None):
         """a weighted histogram (hist.Hist with Weight storage) of a column (name, expression string or lazy column).
         Binning: hist("mll", (80, 70, 150)), hist("mll", [70, 110, 150]) (edges), hist("mll", bins=80, range=(70, 150))
-        or an axis (aks.Regular, aks.Variable, hist axes). A list of columns makes an n-dim histogram, with `axes`.
+        or an axis (aks.Regular, aks.Variable, aks.IntCategory, hist axes). A list of columns makes an n-dim histogram,
+        with one axis per column in `axes` ((n, lo, hi), a list of edges, or an axis).
         Jagged columns fill one entry per object."""
         xs = x if isinstance(x, (list, tuple)) and axes is not None else [x]
         cols = [self._expr(c) for c in xs]
@@ -415,13 +416,14 @@ class Frame:
                 axes = [res.Regular(*bins, name=_name(xs[0]))]
             elif isinstance(bins, (list, np.ndarray)):
                 axes = [res.Variable(list(bins), name=_name(xs[0]))]
-            elif isinstance(bins, (res.Regular, res.Variable)) or hasattr(bins, "edges"):
+            elif isinstance(bins, res.AXES) or hasattr(bins, "edges"):
                 axes = [res.make_axis(axis=bins)]
             else:
                 axes = [res.make_axis(bins, range, edges, name=_name(xs[0]))]
         else:
-            axes = [res.Regular(*a, name=_name(c)) if isinstance(a, tuple) else res.make_axis(axis=a)
-                    for a, c in zip(axes, xs)]
+            axes = [res.Regular(*a, name=_name(c)) if isinstance(a, tuple)
+                    else res.Variable(list(a), name=_name(c)) if isinstance(a, (list, np.ndarray))
+                    else res.make_axis(axis=a) for a, c in zip(axes, xs)]
         if len(axes) != len(cols):
             raise ValueError("one axis per column")
         w = self._expr(weight) if weight is not None else None
