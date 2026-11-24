@@ -28,7 +28,8 @@ def build(df):
     df["ht"] = aks.sum(jets.pt, axis=1)
     df["mj"] = aks.fill_none(aks.firsts(jets.mass, axis=1), -1.0)
     df["score"] = aks.apply(fake_dnn, df.j1, df.j2, df.mll)
-    df.vary_branches(["Jet_pt", "Jet_mass"], VARS)
+    for s in VARS:
+        df.vary(["Jet_pt", "Jet_mass"], name=s, **{t: [f"Jet_pt_{s}_{t}", f"Jet_mass_{s}_{t}"] for t in ("up", "down")})
     df.vary("w", up=df.genWeight * df.pu_up, name="pu")
     sel = df[df.njet >= 2]
     sel2 = sel[sel.score > 0.3]
@@ -135,7 +136,7 @@ def test_sparse_variation_recomputes_few_rows(events_file):
     df = aks.read_root(events_file, step=20_000)
     df["ht"] = aks.sum(df.Jet.pt[df.Jet.pt > 25], axis=1)
     df["s"] = aks.apply(fake_dnn, df.ht, df.ht, df.mll)
-    df.vary_branches(["Jet_pt"], ["jer4"])
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
     aks.compute(aks.varied(df.hist("s", bins=10, range=(0, 1))))
     # fused: the DNN-like function reruns only on the rows whose (masked) jets move
     assert 0 < aks.last_stats["fused_rows"] < 0.3 * 2 * 20_000
@@ -166,7 +167,7 @@ def test_apply_returning_a_dict(events_file, raw):
     def jets_summary(pt):
         return {"n": ak.to_numpy(ak.num(pt[pt > 25], axis=1)), "ht": ak.to_numpy(ak.sum(pt[pt > 25], axis=1))}
     df = aks.read_root(events_file, step=3_000)
-    df.vary_branches(["Jet_pt"], ["jer4"])
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
     out = aks.apply(jets_summary, df.Jet.pt)
     df["ht"] = out["ht"]
     h = aks.varied(df.hist("ht", bins=20, range=(0, 400)))
@@ -196,7 +197,8 @@ def test_apply_when_trigger(events_file, raw, engine):
         sel = (pt > 30) & (abs(eta) < 2.5)
         return ak.to_numpy(ak.sum(pt[sel], axis=1))
     df = aks.read_root(events_file, step=4_000)
-    df.vary_branches(["Jet_pt"], ["jer4", "jes"])
+    for s in ("jer4", "jes"):
+        df.vary("Jet_pt", up=f"Jet_pt_{s}_up", down=f"Jet_pt_{s}_down", name=s)
     keep = (df.Jet.pt > 30) & (abs(df.Jet.eta) < 2.5)
     df["ht"] = aks.apply(ht_selected, df.Jet.pt, df.Jet.eta, when=[keep, df.Jet.pt[keep]])
     h = aks.varied(df.hist("ht", bins=30, range=(0, 600)))
@@ -224,7 +226,8 @@ def test_batched_variations_match_unbatched(events_file, raw):
 
 
 def test_vary_forms(events_file):
-    """vary(column(s), name=, **tags): a list of columns varied together = vary_branches; name defaults to the column."""
+    """vary(column(s), name=, **tags): a list of columns varied together = one vary per column under the same name;
+    name defaults to the column."""
     def ht(df):
         jets = df.Jet[df.Jet.pt > 25]
         df["ht"] = aks.sum(jets.pt * jets.mass, axis=1)
@@ -232,8 +235,9 @@ def test_vary_forms(events_file):
         return aks.varied(df.hist("ht", bins=20, range=(0, 4000), weight="w"))
 
     df = aks.read_root(events_file, step=5_000)
-    df.vary_branches(["Jet_pt", "Jet_mass"], ["jer4"])
-    by_branches = ht(df)
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
+    df.vary(("Jet", "mass"), up="Jet_mass_jer4_up", down="Jet_mass_jer4_down", name="jer4")
+    by_column = ht(df)
     df = aks.read_root(events_file, step=5_000)
     df.vary(["Jet_pt", ("Jet", "mass")], name="jer4", up=["Jet_pt_jer4_up", "Jet_mass_jer4_up"],
             down=[df.Jet_pt_jer4_down, "Jet_mass_jer4_down"])
@@ -241,7 +245,7 @@ def test_vary_forms(events_file):
     df2 = aks.read_root(events_file, step=5_000)
     df2.vary("genWeight", up="genWeight * 2.0")             # name defaults to the column
     by_default = aks.varied(df2.sum("mll", weight="genWeight"))
-    (a,), (b,), (c,) = aks.compute(by_branches), aks.compute(by_list), aks.compute(by_default)
+    (a,), (b,), (c,) = aks.compute(by_column), aks.compute(by_list), aks.compute(by_default)
     assert set(a) == set(b) == {"nominal", "jer4:up", "jer4:down"}
     assert set(c) == {"nominal", "genWeight:up"} and c["genWeight:up"] == pytest.approx(2 * c["nominal"])
     for v in a:

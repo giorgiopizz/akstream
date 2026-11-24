@@ -12,7 +12,7 @@ def test_bulk_read_set(events_file):
 
 def test_variation_branches_only_when_varied_result(events_file):
     df = aks.read_root(events_file)
-    df.vary_branches(["Jet_pt"], ["jer4"])
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
     df["ht"] = aks.sum(df.Jet.pt, axis=1)
     h = df.hist("ht", bins=10, range=(0, 100))
     assert Plan([h]).prefetch == ["Jet_pt"]

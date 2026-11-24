@@ -202,7 +202,6 @@ must use the columns of the frame it is booked on; mixing columns of different s
 df.vary("w", up="genWeight * pu_up", down=df.genWeight * df.pu_down, name="pu")   # any tag names, not only up / down
 df.vary(["Jet_pt", "Jet_mass"], up=["Jet_pt_jer_up", "Jet_mass_jer_up"],          # columns varied together:
         down=["Jet_pt_jer_down", "Jet_mass_jer_down"], name="jer")                 # one alternative per column
-df.vary_branches(["Jet_pt", "Jet_mass"], ["jer", "jes_Total"], tags=("up", "down"), fmt="{column}_{syst}_{tag}")
 ```
 
 * The order is RDataFrame's `Vary(columns, expression, tags, variationName)`: the column(s) first, the name last. A
@@ -211,9 +210,6 @@ df.vary_branches(["Jet_pt", "Jet_mass"], ["jer", "jes_Total"], tags=("up", "down
   alternative is an error.
 * `column` is a column name, a collection field `("Jet", "pt")`, or a list of them; an `alternative` is a branch /
   column name, an expression string, or a lazy column (a list of them, in the order of the columns, for a list).
-* `vary_branches` is the shortcut for variations stored as branches (NanoAOD-style, or the outputs of a skim): for
-  each systematic it varies the columns together with the branches `fmt.format(column=, syst=, tag=)`
-  (`Jet_pt_jer_up`, `Jet_mass_jer_up`); `missing="skip"` leaves out the branches that are not in the files.
 * A varied **branch** varies wherever it is read. A varied **defined column** varies from that point on (it gets a
   node of its own, so an identical expression elsewhere is not affected).
 * Everything downstream of a varied column follows: selections, sorts, collection replacements, results. Declare the

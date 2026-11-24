@@ -4,10 +4,11 @@
 
     df = aks.read_root("skims/*.root", "Events", step=200_000)
     df["ht"] = aks.sum(df.Jet.pt[df.Jet.pt > 25], axis=1)
-    df.vary_branches(["Jet_pt", "Jet_mass"], ["jer_4", "jes_Total"])
+    df.vary(["Jet_pt", "Jet_mass"], up=["Jet_pt_jer_up", "Jet_mass_jer_up"], down=["Jet_pt_jer_down", "Jet_mass_jer_down"],
+            name="jer")
     sel = df.filter("mll > 110 && mll < 150")
     h = aks.varied(sel.hist("ht", bins=50, range=(0, 500), weight="genWeight"))
-    aks.compute(h, workers=8)            # {"nominal": Hist, "jer_4:up": Hist, ...}
+    aks.compute(h, workers=8)            # {"nominal": Hist, "jer:up": Hist, ...}
 
 Every awkward function is available lazily as aks.<name> (aks.sum, aks.num, aks.firsts, aks.pad_none, ...); the ones
 that act on each field (pad_none, fill_none, firsts, ...) also take a collection and return one. akstream.hep kernels

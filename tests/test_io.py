@@ -54,7 +54,7 @@ def test_threads_option(events_file):
 def test_record_under_variation(events_file, raw):
     """a whole collection passed to an awkward function (combinations): fields loaded lazily, also in a variation."""
     df = aks.read_root(events_file, step=4_000)
-    df.vary_branches(["Jet_pt"], ["jer4"])
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
     jets = df.Jet[df.Jet.pt > 20]
     pairs = aks.combinations(jets, 2, axis=1)
     df["best"] = aks.fill_none(aks.max(pairs["0"].pt + pairs["1"].pt, axis=1), -1.0)

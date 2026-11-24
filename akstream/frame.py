@@ -391,33 +391,6 @@ class Frame:
         except KeyError:
             return False
 
-    def vary_branches(self, columns, systematics, tags=("up", "down"), fmt="{column}_{syst}_{tag}", missing="error"):
-        """NanoAOD-style variations stored as branches: for each systematic, vary the columns together, each with the
-        branch fmt.format(column=, syst=, tag=):
-
-            df.vary_branches(["Jet_pt", "Jet_mass"], ["jer", "jes_Total"])
-            # = df.vary(["Jet_pt", "Jet_mass"], up=["Jet_pt_jer_up", "Jet_mass_jer_up"],
-            #           down=["Jet_pt_jer_down", "Jet_mass_jer_down"], name="jer"), and the same for jes_Total
-
-        missing="skip" leaves out the (column, systematic, tag) whose branch is not in the files."""
-        branches = self._dataset.branches
-        for syst in systematics:
-            per_tag = {}
-            for tag in tags:
-                alts = {}
-                for c in columns:
-                    b = fmt.format(column=c, syst=syst, tag=tag)
-                    if b not in branches:
-                        if missing == "skip":
-                            continue
-                        raise KeyError(f"no branch {b}")
-                    alts[c] = b
-                if alts:
-                    per_tag[tag] = alts
-            for tag, alts in per_tag.items():
-                self.vary(list(alts), name=syst, **{tag: list(alts.values())})
-        return self
-
     # ------------------------------------------------------------ results
     def _expr(self, x):
         if isinstance(x, str):
