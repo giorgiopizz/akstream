@@ -77,7 +77,7 @@ def lazy(outputs=None):
 
 
 # ---------------------------------------------------------------- jagged <-> flat
-def flat(x):
+def flat(x, _packed=False):
     """(offsets, flat values) of a one-level jagged array of numbers; the offsets start at 0."""
     layout = x.layout if isinstance(x, ak.Array) else ak.to_layout(x)
     while isinstance(layout, ak.contents.IndexedArray):
@@ -88,8 +88,10 @@ def flat(x):
         if isinstance(content, ak.contents.NumpyArray):
             data = np.asarray(content.data)
             return offsets - offsets[0], data[offsets[0]:offsets[-1]]
-    packed = ak.to_packed(ak.Array(layout))
-    return flat(packed)
+    if _packed:  # still not a list of numbers per event once packed: records, deeper nesting, option types
+        raise TypeError(f"expected a jagged array of numbers (one list per event), got {ak.Array(layout).type}: "
+                        "pass one field (df.Jet.pt), or for 4-vectors hep.nth(df.Jet, k, fill)")
+    return flat(ak.to_packed(ak.Array(layout)), _packed=True)
 
 
 def jagged(offsets, values):

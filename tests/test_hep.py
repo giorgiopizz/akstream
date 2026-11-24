@@ -120,3 +120,13 @@ def test_max_mass_pair_matches_awkward():
     assert np.array_equal(found, rf) and np.array_equal(i1, r1) and np.array_equal(i2, r2)
     assert np.array_equal(mjj[found], rm[found].astype(np.float32))
     assert np.array_equal(detajj[found].astype(np.float64), rd[found])
+
+
+def test_flat_refuses_records_clearly():
+    jets = ak.zip({"pt": ak.Array([[30.0, 20.0], [], [50.0]]), "eta": ak.Array([[0.1, 1.0], [], [2.0]])})
+    with pytest.raises(TypeError, match="jagged array of numbers"):
+        hep.flat(jets)
+    with pytest.raises(TypeError, match="jagged array of numbers"):
+        hep.per_event_sum(jets)
+    with pytest.raises(TypeError, match="jagged array of numbers"):
+        hep.flat(ak.Array([[[1.0], [2.0]], []]))
