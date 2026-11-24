@@ -51,7 +51,7 @@ test-extras = ["test"]
 test-command = "pytest {project}/tests -q -p no:cacheprovider"
 
 [tool.cibuildwheel.linux]
-archs = ["x86_64", "aarch64"]
+archs = ["native"]  # each runner its own architecture: ubuntu-latest x86_64, ubuntu-24.04-arm aarch64 (no emulation)
 
 [tool.cibuildwheel.macos]
 archs = ["arm64", "x86_64"]
