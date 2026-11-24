@@ -272,7 +272,7 @@ def test_lazy_p4_extra_fields(dimuon_file):
         keep = (mll > 60) & (pt1 > 26) & (np.abs(a["mu2_eta"]) < 2.0) & (a["mu1_charge"] > 0)
         assert got_n[name] == keep.sum(), name
         if name == "nominal":
-            np.testing.assert_array_equal(np.asarray(got["mll"]), mll[keep])
+            assert_same(got["mll"], mll[keep])  # the C++ kernels vs numpy: exact where numpy's sinh is libm's
 
 
 # ---------------------------------------------------------------- ROOT GenVector conventions
