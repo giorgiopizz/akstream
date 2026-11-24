@@ -1,6 +1,7 @@
 """Lorentz vectors: one 4-vector per row (an event) or per object (jagged), in double precision.
 
     mu1 = vector.p4(pt, eta, phi, mass)        # px = pt cos(phi), py = pt sin(phi), pz = pt sinh(eta), E from p and m
+    mu1 = vector.p4(pt, eta, phi, mass, pdgId=pdg)   # with extra fields: mu1.pdgId (a sum of vectors has none)
     ll = mu1 + mu2                             # cartesian sums
     ll.mass, ll.pt, ll.eta, ll.phi             # computed when asked for (an unused eta / phi costs nothing)
     phi_cs, cos_cs = vector.collins_soper(mu1, mu2, charge1)
@@ -57,6 +58,35 @@ def _wrap(offsets, flat):
     return flat if offsets is None else jagged.wrap(offsets, flat)
 
 
+def check_fields(names):
+    """the extra fields of p4(..., **fields) may not shadow what a 4-vector has (pt, mass, px, rapidity, ...)."""
+    for name in names:
+        if name.startswith("_") or hasattr(RootP4, name):
+            raise ValueError(f"p4: {name!r} is a 4-vector attribute, it cannot be an extra field")
+
+
+def _extra_fields(offsets, n, fields):
+    """the extra fields as given (their own dtype), one per row or per object as the vectors: a scalar is repeated, and
+    a per-row value is repeated for each object of jagged vectors."""
+    check_fields(fields)
+    counts = None if offsets is None else np.diff(offsets)
+    out = {}
+    for name, x in fields.items():
+        if np.isscalar(x):
+            out[name] = _wrap(offsets, np.full(n if offsets is None else int(offsets[-1]), x))
+            continue
+        if isinstance(x, ak.Array) and x.ndim > 1:
+            if offsets is None or not np.array_equal(ak.to_numpy(ak.num(x)), counts):
+                raise ValueError(f"p4: the extra field {name!r} has a different layout from the 4-vector components")
+            out[name] = x
+            continue
+        x = ak.to_numpy(x) if isinstance(x, ak.Array) else np.asarray(x)
+        if len(x) != n:
+            raise ValueError(f"p4: the extra field {name!r} has {len(x)} rows, the 4-vector components {n}")
+        out[name] = x if offsets is None else jagged.wrap(offsets, np.repeat(x, counts))
+    return out
+
+
 class P4(dict):
     """a Lorentz vector (arrays of components); see the module docstring."""
 
@@ -64,12 +94,19 @@ class P4(dict):
         super().__init__(*args, **kwargs)
         self._derived = {}
 
+    def __getattr__(self, name):  # the extra fields of p4(..., pdgId=...)
+        if not name.startswith("_") and dict.__contains__(self, name):
+            return dict.__getitem__(self, name)
+        raise AttributeError(f"{type(self).__name__} has no field {name!r}")
+
     @classmethod
-    def from_ptetaphim(cls, pt, eta, phi, mass):
+    def from_ptetaphim(cls, pt, eta, phi, mass, **fields):
         offsets, (pt, eta, phi, mass) = _flatten([pt, eta, phi, mass])
         px, py, pz, e = _hep.p4_cartesian(pt, eta, phi, mass)
-        return cls({k: _wrap(offsets, v) for k, v in
-                    zip(("px", "py", "pz", "e", "pt", "eta", "phi", "mass"), (px, py, pz, e, pt, eta, phi, mass))})
+        out = cls({k: _wrap(offsets, v) for k, v in
+                   zip(("px", "py", "pz", "e", "pt", "eta", "phi", "mass"), (px, py, pz, e, pt, eta, phi, mass))})
+        out.update(_extra_fields(offsets, len(pt) if offsets is None else len(offsets) - 1, fields))
+        return out
 
     @classmethod
     def from_cartesian(cls, px, py, pz, e):
@@ -144,9 +181,12 @@ class RootP4(P4):
     transcendental functions are the C math library's, as ROOT's, not numpy's)."""
 
     @classmethod
-    def from_ptetaphim(cls, pt, eta, phi, mass):
+    def from_ptetaphim(cls, pt, eta, phi, mass, **fields):
         with np.errstate(all="ignore"):  # placeholders (eta = -999): inf / nan, as ROOT computes them
-            return cls._from_ptetaphim(pt, eta, phi, mass)
+            out = cls._from_ptetaphim(pt, eta, phi, mass)
+        offsets, (pt,) = _flatten([pt])
+        out.update(_extra_fields(offsets, len(pt) if offsets is None else len(offsets) - 1, fields))
+        return out
 
     @classmethod
     def _from_ptetaphim(cls, pt, eta, phi, mass):
@@ -225,10 +265,11 @@ class RootP4(P4):
         return (RootP4, (dict(self),))
 
 
-def p4(pt, eta, phi, mass, rdf_compatible=False):
+def p4(pt, eta, phi, mass, rdf_compatible=False, **fields):
     """4-vectors from (pt, eta, phi, mass) arrays (numpy per row, or jagged per object); rdf_compatible=True: RootP4
-    (ROOT's PtEtaPhiMVector arithmetic, to reproduce RDataFrame code exactly)."""
-    return (RootP4 if rdf_compatible else P4).from_ptetaphim(pt, eta, phi, mass)
+    (ROOT's PtEtaPhiMVector arithmetic, to reproduce RDataFrame code exactly). Extra fields (pdgId=..., charge=...)
+    are carried along as v.pdgId (same layout, a scalar or a per-row value repeated); a sum of vectors has none."""
+    return (RootP4 if rdf_compatible else P4).from_ptetaphim(pt, eta, phi, mass, **fields)
 
 
 def add(*vectors):

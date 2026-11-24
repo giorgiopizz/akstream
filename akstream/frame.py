@@ -284,7 +284,8 @@ class Frame:
             f = f._parent
         chain.reverse()
         steps = [("all entries", chain[0])] + [(f._filter_name or f"selection {f._space.id}", f) for f in chain[1:]]
-        return res.Report([(label, f.count(weight=f._expr(weight) if weight is not None else None)) for label, f in steps])
+        return res.Report([(label, res.Sum(f, None, f._expr(weight) if weight is not None else None))
+                           for label, f in steps])
 
     def apply(self, fn, columns, outputs=None, when=None, prefix="", name=None, **kwargs):
         """a new frame with the columns computed by fn(chunk, **kwargs), a function of a dict of arrays
@@ -447,8 +448,11 @@ class Frame:
         return res.Sum(self, self._expr(column) if column is not None else None,
                        self._expr(weight) if weight is not None else None)
 
-    def count(self, weight=None):
-        return res.Sum(self, None, self._expr(weight) if weight is not None else None)
+    def count(self, *args, **kwargs):
+        """the number of rows (entries passing the selections); a sum of weights is df.sum("weight")."""
+        if args or kwargs:
+            raise TypeError('count() counts the rows and takes no argument: for a sum of weights use df.sum("weight")')
+        return res.Sum(self, None, None)
 
     def collect(self, columns=None):
         if columns is None:
@@ -500,15 +504,17 @@ class Frame:
         return list(columns)
 
     def head(self, n=5, columns=None):
-        """the first n rows of the selection (runs immediately, on the first chunk(s) only)."""
+        """the rows of the selection among the first n entries of the input (at most n rows; runs immediately, on the
+        first chunk(s) only)."""
         from .engine import compute
         r = self.collect(columns)
         out, = compute(r, max_entries=n)
         return out[:n]
 
     def peek(self, expr, n=1000):
-        """the value of an expression (or column name) on the first n rows of this frame, computed now: to look at a
-        column, or at the fields of a record returned by aks.apply."""
+        """the value of an expression (or column name) on the rows of this frame among the first n entries of the
+        input (the selections apply after: fewer than n rows when they cut), computed now: to look at a column, or at
+        the fields of a record returned by aks.apply."""
         from .engine import compute
         r = res.Collect(self, [expr], names=["value"])
         out, = compute(r, max_entries=n)

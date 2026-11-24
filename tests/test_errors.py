@@ -61,3 +61,11 @@ def test_failed_result_construction_is_not_left_booked(events_file):
 def test_version():
     import akstream as aks
     assert isinstance(aks.__version__, str) and aks.__version__
+
+
+def test_count_takes_no_argument(events_file):
+    df = aks.read_root(events_file)
+    with pytest.raises(TypeError, match=r'df\.sum\("weight"\)'):
+        df.count("genWeight")
+    with pytest.raises(TypeError, match="no argument"):
+        df.count(weight="genWeight")

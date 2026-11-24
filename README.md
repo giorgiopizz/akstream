@@ -72,13 +72,13 @@ df.hist("mjj", (40, 0, 4000))
 | `df.eval("...")`, `df[["a", "b"]]`, `df.columns`, `df.branches`, `df.dtypes` | as pandas |
 | `coll[mask]`, `coll[index]`, `coll.pt`, `coll[["pt", "eta"]]`, `coll.p4` | collections: masks / sorts / indices touch only the fields used |
 | operators, `np.<ufunc>(e)`, `np.where/clip/stack/...`, `aks.<any awkward function>` | lazy |
-| `aks.p4(pt, eta, phi, m)`, `coll.p4`, `v1 + v2`, `.mass .pt .eta .phi .px ...`, `aks.collins_soper(l1, l2, q1)`, `aks.delta_r` | 4-vectors (C++, `akstream.vector`); with `rdf_compatible`: ROOT's `PtEtaPhiMVector` arithmetic (`.rapidity` too) |
+| `aks.p4(pt, eta, phi, m, **fields)`, `coll.p4`, `v1 + v2`, `.mass .pt .eta .phi .px ...`, `aks.collins_soper(l1, l2, q1)`, `aks.delta_r` | 4-vectors (C++, `akstream.vector`); extra fields ride along (`aks.p4(..., pdgId=df.mu1_pdgId)` → `mu1.pdgId`; a sum has none); with `rdf_compatible`: ROOT's `PtEtaPhiMVector` arithmetic (`.rapidity` too) |
 | `hep.max_mass_pair(df.Jet)`, `hep.pick(df.Jet.pt, idx, 0)`, ... | the `akstream.hep` kernels on lazy columns (tuples of lazy columns where they return tuples) |
 | `aks.checked(value, condition, message)` | `value`, with `ValueError(message)` if `condition` fails on a row |
 | `df.apply(fn, columns, outputs=, when=, prefix=, **kw)` | `fn(chunk dict, **kw) -> dict`: a new frame with its outputs as columns |
 | `aks.apply(fn, *cols, when=)`, `aks.onnx(path, cols)` | row-local user functions of columns / ONNX models (treated as expensive) |
 | `df.hist(x, (n, lo, hi) / edges / axis, weight)`, `df.hist([x, y, ...], axes=[...])`, `df.hists({name: binning}, weight, varied)` | `hist.Hist` (Weight storage), any number of dimensions; axes `aks.Regular`, `aks.Variable`, `aks.IntCategory` (or the hist ones); x a column or expression string; jagged x fills per object |
-| `df.sum(col, weight)`, `df.count(weight)`, `df.groupby(key).sum(col) / .count()` | |
+| `df.sum(col, weight)`, `df.count()`, `df.groupby(key).sum(col) / .count()` | `df.count()` = the number of rows; a sum of weights is `df.sum("weight")` |
 | `df.collect(cols)`, `df.head(n)`, `df.peek(expr)`, `df.to_root(path, cols)` | awkward arrays / a TTree written with uproot (collections as `nX` + `X_f`) |
 | `aks.varied(df.to_root("out/{tag}/f.root", cols))` | one file per variation in the same pass (`{variation}`, `{group}`, `{tag}`; nominal = "nominal"): per chunk the nominal rows with the rows a variation changes replaced by their recomputation |
 | `df.vary(col, up=alt, down=alt, name=)`, `df.vary([col, ...], up=[alt, ...], down=[...], name=)` | variations `name:up`, `name:down` (col = a column, or `("Jet", "pt")`; a list = columns varied together; alternative = branch, expression string, or lazy column; name defaults to the column for one column); a varied branch varies wherever it is read, a varied defined column from there on |

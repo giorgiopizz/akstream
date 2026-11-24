@@ -227,6 +227,54 @@ def test_collection_p4(dimuon_file):
     np.testing.assert_array_equal(np.asarray(out["sum_pt"]), np.asarray(ref))
 
 
+@pytest.mark.parametrize("rdf", [False, True])
+def test_p4_extra_fields(rdf):
+    pt, eta, phi, m = (np.array(x) for x in ([30.0, 40.0, 50.0], [0.1, -1.0, 2.0], [0.5, 2.0, -1.0], [0.1, 0.1, 0.1]))
+    pdg = np.array([13, -13, 11], np.int32)
+    v, plain = vector.p4(pt, eta, phi, m, rdf, pdgId=pdg, w=1.5), vector.p4(pt, eta, phi, m, rdf)
+    assert v.pdgId.dtype == np.int32 and v.pdgId.tolist() == [13, -13, 11] and v.w.tolist() == [1.5] * 3
+    for k in ("pt", "eta", "phi", "mass", "px", "e"):
+        np.testing.assert_array_equal(getattr(v, k), getattr(plain, k))
+    s = v + v  # a sum has no extra fields
+    np.testing.assert_array_equal(s.mass, (plain + plain).mass)
+    with pytest.raises(AttributeError, match="pdgId"):
+        s.pdgId
+    # jagged: a jagged field, a per-row one repeated per object, a scalar
+    jpt, jeta = ak.Array([[30.0, 20.0], [], [50.0]]), ak.Array([[0.1, -1.0], [], [2.0]])
+    jv = vector.p4(jpt, jeta, jeta, jpt * 0, rdf, charge=ak.Array([[1, -1], [], [1]]), ev=np.array([7, 8, 9]), flav=13)
+    assert ak.to_list(jv.charge) == [[1, -1], [], [1]] and ak.to_list(jv.ev) == [[7, 7], [], [9]]
+    assert ak.to_list(jv.flav) == [[13, 13], [], [13]]
+    for bad in ("px", "e", "energy", "rapidity", "values", "_x"):
+        with pytest.raises(ValueError, match="4-vector attribute"):
+            vector.p4(pt, eta, phi, m, rdf, **{bad: pdg})
+    with pytest.raises(ValueError, match="rows"):
+        vector.p4(pt, eta, phi, m, rdf, pdgId=pdg[:2])
+    with pytest.raises(ValueError, match="layout"):
+        vector.p4(jpt, jeta, jeta, jpt * 0, rdf, charge=ak.Array([[1], [], [1]]))
+
+
+def test_lazy_p4_extra_fields(dimuon_file):
+    """the user's dimuon selection with mu1.pdgId * mu2.pdgId < 0, under a variation, against numpy."""
+    df = aks.read_root(dimuon_file, step=700)
+    df.vary("mu1_pt", up=df.mu1_pt * np.float32(1.01), down=df.mu1_pt * np.float32(0.99), name="scale")
+    df["mu1"] = aks.p4(df.mu1_pt, df.mu1_eta, df.mu1_phi, df.mu1_mass, pdgId=-13 * df.mu1_charge)
+    df["mu2"] = aks.p4(df.mu2_pt, df.mu2_eta, df.mu2_phi, df.mu2_mass, pdgId=13)
+    df["mll"] = (df.mu1 + df.mu2).mass
+    sel = df[(df.mll > 60) & (df.mu1.pt > 26) & (abs(df.mu2.eta) < 2.0) & (df.mu1.pdgId * df.mu2.pdgId < 0)]
+    n, out = aks.varied(sel.count()), sel.collect(["mll"])
+    got_n, got = aks.compute(n, out)
+
+    a = _reference(dimuon_file)
+    for name, scale in (("nominal", None), ("scale:up", 1.01), ("scale:down", 0.99)):
+        pt1 = a["mu1_pt"] if scale is None else a["mu1_pt"] * np.float32(scale)
+        mll = np_mass(np_add(np_p4(pt1, a["mu1_eta"], a["mu1_phi"], a["mu1_mass"]),
+                             np_p4(a["mu2_pt"], a["mu2_eta"], a["mu2_phi"], a["mu2_mass"])))
+        keep = (mll > 60) & (pt1 > 26) & (np.abs(a["mu2_eta"]) < 2.0) & (a["mu1_charge"] > 0)
+        assert got_n[name] == keep.sum(), name
+        if name == "nominal":
+            np.testing.assert_array_equal(np.asarray(got["mll"]), mll[keep])
+
+
 # ---------------------------------------------------------------- ROOT GenVector conventions
 def test_root_p4_matches_genvector():
     ROOT = pytest.importorskip("ROOT")

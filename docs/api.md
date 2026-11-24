@@ -130,7 +130,8 @@ df["reg"] = df.eval("mll > 120 ? 1 : (mll > 90 && njet >= 2 ? 2 : 0)")
 df.filter("110 < mll < 150 and njet >= 2")    # Python syntax too; chained comparisons work
 ```
 
-`df.peek(expr, n=1000)` computes an expression on the first rows now; `df.head(n, columns)` returns the first rows.
+`df.peek(expr, n=1000)` computes an expression now, on the first `n` entries of the input (the selections apply after,
+so a selected frame gives fewer rows); `df.head(n, columns)` returns its rows among the first `n` entries.
 
 ## Collections
 
@@ -230,7 +231,8 @@ Evaluation: per chunk, each variation is recomputed only on the rows where it ch
 | `df.hist(x, bins, range=, weight=, name=)` | `hist.Hist` with Weight storage. `x`: a column or an expression string; a jagged `x` fills one entry per object. `bins`: `(n, lo, hi)`, a list of edges, `aks.Regular(n, lo, hi)`, `aks.Variable(edges)`, `aks.IntCategory([0, 1, 2])`, or a `hist` Regular / Variable / IntCategory axis; or `bins=n, range=(lo, hi)`. An IntCategory axis needs an integer (or bool) column (a float one is refused, as boost-histogram); values that are not a category go to its overflow bin |
 | `df.hist([x, y, z], axes=[...], weight=)` | an n-dimensional histogram, one axis per column (each in any of the forms above), e.g. `axes=[(80, 70, 150), [0, 1, 2, 5], aks.IntCategory([0, 1, 2])]`; per-event columns are repeated for each object of a jagged one |
 | `df.hists({name: binning or (column, binning)}, weight=, varied=)` | `{name: result}` |
-| `df.sum(column, weight=)`, `df.count(weight=)` | a float |
+| `df.sum(column, weight=)` | a float: the sum of `column` (weighted), or of `weight` alone: `df.sum("weight")` is the sum of weights |
+| `df.count()` | the number of rows (entries passing the selections) |
 | `df.groupby(key).sum(column, weight=)`, `.count()` | `{key value: total}` |
 | `df.report(weight=)` | cutflow `[(filter name, entries, efficiency vs previous, cumulative efficiency)]`; `print(report)` shows a table |
 | `df.collect(columns)` | an awkward record array (or `df[["a", "b"]].collect()`) |
@@ -310,6 +312,7 @@ not propagated further).
 
 ```python
 mu1 = aks.p4(df.mu1_pt, df.mu1_eta, df.mu1_phi, df.mu1_mass)    # lazy; df.Jet.p4 for a collection
+mu1 = aks.p4(df.mu1_pt, df.mu1_eta, df.mu1_phi, df.mu1_mass, pdgId=df.mu1_pdgId)   # extra fields: mu1.pdgId
 ll = mu1 + mu2
 ll.mass, ll.pt, ll.eta, ll.phi, ll.px, ll.e                       # computed only when used
 phi_cs, cos_cs = aks.collins_soper(mu1, mu2, df.mu1_charge)       # mu1 = the positive lepton where charge > 0
@@ -317,10 +320,12 @@ dr = aks.delta_r(j1, j2)
 ```
 
 On arrays (inside chunk functions): `vector.p4(pt, eta, phi, mass)`, `vector.add`, `vector.collins_soper`,
-`vector.delta_phi`, `vector.delta_r`; per event (numpy) or per object (jagged). A `P4` is a dict of its components
-(px, py, pz, e; pt, eta, phi, mass when built from them), so it travels through selections and variations like any
-column. The loops are C++ (see [internals](internals.md#the-c-extension-_hepcpp)) and follow the plain numpy formulas
-operation by operation.
+`vector.delta_phi`, `vector.delta_r`; per event (numpy) or per object (jagged). A `P4` is a dict of its components (px,
+py, pz, e; pt, eta, phi, mass when built from them), so it travels through selections and variations like any column.
+Extra fields (`pdgId=`, `charge=`, ...) are kept as given (their own dtype; a scalar or a per-event value is repeated
+for each object of jagged vectors) and read as `v.pdgId`; a sum of vectors has none, and names a 4-vector already uses
+(`pt`, `mass`, `px`, `rapidity`, ...) are refused. The loops are C++ (see
+[internals](internals.md#the-c-extension-_hepcpp)) and follow the plain numpy formulas operation by operation.
 
 ## HEP kernels (`akstream.hep`)
 

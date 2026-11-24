@@ -99,16 +99,18 @@ def _unwrap_all(args):
     return _unwrap(args)
 
 
-def p4(pt, eta, phi, mass, rdf_compatible=None):
+def p4(pt, eta, phi, mass, rdf_compatible=None, **fields):
     """Lorentz vectors from (pt, eta, phi, mass): a column of akstream.vector.P4 (lazy) for frame columns, a P4 for
     arrays. (mu1 + mu2).mass, .pt, .eta, .phi, .px ... are columns as well. rdf_compatible: ROOT's PtEtaPhiMVector
     arithmetic (vector.RootP4), bit for bit as RDataFrame code (default: the read_root setting for columns, else
-    False)."""
-    if _lazy(pt, eta, phi, mass):
+    False). Extra fields are carried along: aks.p4(..., pdgId=df.mu1_pdgId) has mu1.pdgId (a sum of vectors has
+    none)."""
+    _vector.check_fields(fields)
+    if _lazy(pt, eta, phi, mass, *fields.values()):
         if rdf_compatible is None:
             rdf_compatible = _dataset_of(pt, eta, phi, mass).rdf_compatible
-        return call(_vector.p4, pt, eta, phi, mass, rdf_compatible=rdf_compatible, _name="p4")
-    return _vector.p4(pt, eta, phi, mass, rdf_compatible=bool(rdf_compatible))
+        return call(_vector.p4, pt, eta, phi, mass, rdf_compatible=rdf_compatible, _name="p4", **fields)
+    return _vector.p4(pt, eta, phi, mass, rdf_compatible=bool(rdf_compatible), **fields)
 
 
 def _dataset_of(*args):
