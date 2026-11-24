@@ -2,6 +2,7 @@
 
     mu1 = vector.p4(pt, eta, phi, mass)        # px = pt cos(phi), py = pt sin(phi), pz = pt sinh(eta), E from p and m
     mu1 = vector.p4(pt, eta, phi, mass, pdgId=pdg)   # with extra fields: mu1.pdgId (a sum of vectors has none)
+    j1 = vector.p4(*per_event_with_none)       # None components (no such object): None kinematics, sums None there
     ll = mu1 + mu2                             # cartesian sums
     ll.mass, ll.pt, ll.eta, ll.phi             # computed when asked for (an unused eta / phi costs nothing)
     phi_cs, cos_cs = vector.collins_soper(mu1, mu2, charge1)
@@ -30,31 +31,45 @@ CARTESIAN = ("px", "py", "pz", "e")
 
 
 def _flat(x):
-    """(offsets or None, float64 numpy) of a per-row numpy array or a one-level jagged array."""
+    """(offsets or None, float64 numpy, valid or None) of a per-row numpy array, a per-row array with None (an event
+    without that object, e.g. hep.nth: computed as 0, `valid` False there) or a one-level jagged array."""
     if isinstance(x, ak.Array) and x.ndim == 1:
-        return None, np.ascontiguousarray(ak.to_numpy(x), dtype=np.float64)
+        if x.layout.is_option:
+            valid = ~np.asarray(ak.is_none(x), bool)
+            return None, np.ascontiguousarray(ak.to_numpy(ak.fill_none(x, 0)), dtype=np.float64), valid
+        return None, np.ascontiguousarray(ak.to_numpy(x), dtype=np.float64), None
     if isinstance(x, ak.Array):
         s = jagged.simple(x)
         if s is None:
             s = jagged.simple(ak.to_packed(x))
             if s is None:
                 raise TypeError(f"4-vector components must be numbers or lists of numbers, got {x.type}")
-        return s[0], np.ascontiguousarray(s[1], dtype=np.float64)
-    return None, np.ascontiguousarray(x, dtype=np.float64)
+        return s[0], np.ascontiguousarray(s[1], dtype=np.float64), None
+    return None, np.ascontiguousarray(x, dtype=np.float64), None
+
+
+def _both(a, b):
+    """the rows valid in both (None: every row)."""
+    return b if a is None else a if b is None else a & b
 
 
 def _flatten(arrays):
-    """(offsets or None, [flat float64]) of components with one common layout."""
+    """(offsets or None, [flat float64], valid or None) of components with one common layout; `valid`: the rows
+    where every component is a number (None where any is None)."""
     parts = [_flat(a) for a in arrays]
-    offsets = parts[0][0]
-    for o, _ in parts[1:]:
+    offsets, valid = parts[0][0], None
+    for o, _, v in parts:
         if (o is None) != (offsets is None) or (o is not None and o is not offsets and not np.array_equal(o, offsets)):
             raise ValueError("4-vector components of different layouts (one per row vs one per object, or different "
                              "object counts)")
-    return offsets, [d for _, d in parts]
+        valid = _both(valid, v)
+    return offsets, [d for _, d, _ in parts], valid
 
 
-def _wrap(offsets, flat):
+def _wrap(offsets, flat, valid=None):
+    if valid is not None:  # None where a component was None
+        return ak.Array(ak.contents.ByteMaskedArray(ak.index.Index8(valid.view(np.int8)), ak.contents.NumpyArray(flat),
+                                                    valid_when=True))
     return flat if offsets is None else jagged.wrap(offsets, flat)
 
 
@@ -74,6 +89,11 @@ def _extra_fields(offsets, n, fields):
     for name, x in fields.items():
         if np.isscalar(x):
             out[name] = _wrap(offsets, np.full(n if offsets is None else int(offsets[-1]), x))
+            continue
+        if isinstance(x, ak.Array) and offsets is None and x.ndim == 1 and x.layout.is_option:
+            if len(x) != n:
+                raise ValueError(f"p4: the extra field {name!r} has {len(x)} rows, the 4-vector components {n}")
+            out[name] = x  # with None where there is no object
             continue
         if isinstance(x, ak.Array) and x.ndim > 1:
             if offsets is None or not np.array_equal(ak.to_numpy(ak.num(x)), counts):
@@ -101,9 +121,9 @@ class P4(dict):
 
     @classmethod
     def from_ptetaphim(cls, pt, eta, phi, mass, **fields):
-        offsets, (pt, eta, phi, mass) = _flatten([pt, eta, phi, mass])
+        offsets, (pt, eta, phi, mass), valid = _flatten([pt, eta, phi, mass])
         px, py, pz, e = _hep.p4_cartesian(pt, eta, phi, mass)
-        out = cls({k: _wrap(offsets, v) for k, v in
+        out = cls({k: _wrap(offsets, v, valid) for k, v in
                    zip(("px", "py", "pz", "e", "pt", "eta", "phi", "mass"), (px, py, pz, e, pt, eta, phi, mass))})
         out.update(_extra_fields(offsets, len(pt) if offsets is None else len(offsets) - 1, fields))
         return out
@@ -128,8 +148,8 @@ class P4(dict):
             return self["mass"]
         hit = self._derived.get("mass")
         if hit is None:
-            offsets, c = self._cartesian()
-            hit = self._derived["mass"] = _wrap(offsets, _hep.p4_mass(*c))
+            offsets, c, valid = self._cartesian()
+            hit = self._derived["mass"] = _wrap(offsets, _hep.p4_mass(*c), valid)
         return hit
 
     def _angles(self, name):
@@ -137,14 +157,14 @@ class P4(dict):
             return self[name]
         hit = self._derived.get(name)
         if hit is None:
-            offsets, (px, py, pz) = _flatten([self["px"], self["py"], self["pz"]])
+            offsets, (px, py, pz), valid = _flatten([self["px"], self["py"], self["pz"]])
             want_eta, want_phi = name == "eta", name == "phi"
             pt, eta, phi = _hep.p4_angles(px, py, pz, want_eta, want_phi)
-            self._derived["pt"] = _wrap(offsets, pt)
+            self._derived["pt"] = _wrap(offsets, pt, valid)
             if want_eta:
-                self._derived["eta"] = _wrap(offsets, eta)
+                self._derived["eta"] = _wrap(offsets, eta, valid)
             if want_phi:
-                self._derived["phi"] = _wrap(offsets, phi)
+                self._derived["phi"] = _wrap(offsets, phi, valid)
             hit = self._derived[name]
         return hit
 
@@ -184,43 +204,44 @@ class RootP4(P4):
     def from_ptetaphim(cls, pt, eta, phi, mass, **fields):
         with np.errstate(all="ignore"):  # placeholders (eta = -999): inf / nan, as ROOT computes them
             out = cls._from_ptetaphim(pt, eta, phi, mass)
-        offsets, (pt,) = _flatten([pt])
+        offsets, (pt,), _ = _flatten([pt])
         out.update(_extra_fields(offsets, len(pt) if offsets is None else len(offsets) - 1, fields))
         return out
 
     @classmethod
     def _from_ptetaphim(cls, pt, eta, phi, mass):
-        offsets, (pt, eta, phi, mass) = _flatten([pt, eta, phi, mass])
+        offsets, (pt, eta, phi, mass), valid = _flatten([pt, eta, phi, mass])
         if np.any(mass < 0):  # PtEtaPhiM4D::RestrictNegMass: m < 0 is kept (space-like) unless p^2 - m^2 < 0
             p = pt * _hep.cosh(eta)
             mass = np.where((mass < 0) & (p * p - mass * mass < 0), -p, mass)
         outside = (phi <= -np.pi) | (phi > np.pi)  # PtEtaPhiM4D::RestrictPhi
         if np.any(outside):
             phi = np.where(outside, phi - np.floor(phi / (2 * np.pi) + .5) * 2 * np.pi, phi)
-        return cls({k: _wrap(offsets, v) for k, v in zip(("pt", "eta", "phi", "mass"), (pt, eta, phi, mass))})
+        return cls({k: _wrap(offsets, v, valid) for k, v in zip(("pt", "eta", "phi", "mass"), (pt, eta, phi, mass))})
 
     def _flat4(self):
         return _flatten([self[k] for k in ("pt", "eta", "phi", "mass")])
 
     def _cart(self):
+        """(offsets, valid, px, py, pz, e)."""
         hit = self._derived.get("cart")
         if hit is None:
-            offsets, (pt, eta, phi, m) = self._flat4()
+            offsets, (pt, eta, phi, m), valid = self._flat4()
             with np.errstate(all="ignore"):
-                hit = self._derived["cart"] = self._cartesian_root(offsets, pt, eta, phi, m)
+                hit = self._derived["cart"] = (offsets, valid) + self._cartesian_root(pt, eta, phi, m)
         return hit
 
     @staticmethod
-    def _cartesian_root(offsets, pt, eta, phi, m):
+    def _cartesian_root(pt, eta, phi, m):
         p = pt * _hep.cosh(eta)
         e2 = p * p + np.where(m >= 0, m * m, -m * m)  # PtEtaPhiM4D::E2 (M2 keeps the sign of m)
         e = np.sqrt(np.where(e2 > 0, e2, 0.0))
-        return offsets, pt * _hep.cos(phi), pt * _hep.sin(phi), pt * _hep.sinh(eta), e
+        return pt * _hep.cos(phi), pt * _hep.sin(phi), pt * _hep.sinh(eta), e
 
     def __getitem__(self, k):
         if k in CARTESIAN and not dict.__contains__(self, k):
-            offsets, *c = self._cart()
-            return _wrap(offsets, c[CARTESIAN.index(k)])
+            offsets, valid, *c = self._cart()
+            return _wrap(offsets, c[CARTESIAN.index(k)], valid)
         return dict.__getitem__(self, k)
 
     mass = property(lambda self: self["mass"])
@@ -231,22 +252,22 @@ class RootP4(P4):
     @property
     def rapidity(self):
         """0.5 log((E + pz) / (E - pz)) (LorentzVector::Rapidity)."""
-        offsets, _, _, z, e = self._cart()
+        offsets, valid, _, _, z, e = self._cart()
         with np.errstate(all="ignore"):
-            return _wrap(offsets, 0.5 * _hep.log((e + z) / (e - z)))
+            return _wrap(offsets, 0.5 * _hep.log((e + z) / (e - z)), valid)
 
     def __add__(self, other):
         if not isinstance(other, RootP4):
             return NotImplemented
-        o1, x1, y1, z1, t1 = self._cart()
-        o2, x2, y2, z2, t2 = other._cart()
+        o1, v1, x1, y1, z1, t1 = self._cart()
+        o2, v2, x2, y2, z2, t2 = other._cart()
         if (o1 is None) != (o2 is None) or (o1 is not None and not np.array_equal(o1, o2)):
             raise ValueError("4-vectors of different layouts")
         with np.errstate(all="ignore"):
-            return self._sum(o1, x1 + x2, y1 + y2, z1 + z2, t1 + t2)
+            return self._sum(o1, _both(v1, v2), x1 + x2, y1 + y2, z1 + z2, t1 + t2)
 
     @staticmethod
-    def _sum(o1, x, y, z, t):
+    def _sum(o1, valid, x, y, z, t):
         # PxPyPzE4D -> PtEtaPhiM4D: Pt, Impl::Eta_FromRhoZ, Phi, M (with the sign of M2)
         pt = np.sqrt(x * x + y * y)
         zs = z / np.where(pt > 0, pt, 1.0)
@@ -257,7 +278,7 @@ class RootP4(P4):
         phi = np.where((x == 0) & (y == 0), 0.0, _hep.atan2(y, x))
         m2 = t * t - x * x - y * y - z * z
         m = np.where(m2 >= 0, np.sqrt(np.abs(m2)), -np.sqrt(np.abs(m2)))
-        return RootP4({k: _wrap(o1, v) for k, v in zip(("pt", "eta", "phi", "mass"), (pt, eta, phi, m))})
+        return RootP4({k: _wrap(o1, v, valid) for k, v in zip(("pt", "eta", "phi", "mass"), (pt, eta, phi, m))})
 
     __radd__ = P4.__radd__
 
@@ -276,20 +297,20 @@ def add(*vectors):
     """the sum of 4-vectors: each cartesian component summed in order, starting from 0 (as Python's sum)."""
     out = {}
     for k in CARTESIAN:
-        offsets, parts = _flatten([v[k] for v in vectors])
+        offsets, parts, valid = _flatten([v[k] for v in vectors])
         total = 0
         for p in parts:
             total = total + p
-        out[k] = _wrap(offsets, total)
+        out[k] = _wrap(offsets, total, valid)  # None where any of the vectors is None
     return P4(out)
 
 
 def collins_soper(l1, l2, charge1):
     """(phi_CS, cos theta_CS) of the pair: the l+ direction in the Collins-Soper frame of l1 + l2 (l1 is the positive
     lepton where charge1 > 0)."""
-    offsets, c = _flatten([l1[k] for k in CARTESIAN] + [l2[k] for k in CARTESIAN] + [charge1])
+    offsets, c, valid = _flatten([l1[k] for k in CARTESIAN] + [l2[k] for k in CARTESIAN] + [charge1])
     phi, cos_theta = _hep.collins_soper(*c)
-    return _wrap(offsets, phi), _wrap(offsets, cos_theta)
+    return _wrap(offsets, phi, valid), _wrap(offsets, cos_theta, valid)
 
 
 def delta_phi(phi1, phi2):

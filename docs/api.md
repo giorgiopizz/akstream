@@ -313,6 +313,7 @@ not propagated further).
 ```python
 mu1 = aks.p4(df.mu1_pt, df.mu1_eta, df.mu1_phi, df.mu1_mass)    # lazy; df.Jet.p4 for a collection
 mu1 = aks.p4(df.mu1_pt, df.mu1_eta, df.mu1_phi, df.mu1_mass, pdgId=df.mu1_pdgId)   # extra fields: mu1.pdgId
+j1 = aks.p4(hep.nth(df.Jet, 0))                                   # a record or collection; None where no jet
 ll = mu1 + mu2
 ll.mass, ll.pt, ll.eta, ll.phi, ll.px, ll.e                       # computed only when used
 phi_cs, cos_cs = aks.collins_soper(mu1, mu2, df.mu1_charge)       # mu1 = the positive lepton where charge > 0
@@ -334,7 +335,7 @@ Single-pass versions of common jagged operations. They take awkward arrays (insi
 
 | function | equivalent awkward code |
 |---|---|
-| `hep.nth(x, k, fill)` | `ak.fill_none(ak.pad_none(x, k + 1)[:, k], fill)`: the k-th object of each event. `x` a collection or jagged 4-vectors: the k-th 4-vector (`fill` a number for each of pt, η, φ, m, or `aks.p4(0, 0, 0, 0)`), e.g. `mjj = (hep.nth(df.Jet, 0, fill=0.0) + hep.nth(df.Jet, 1, fill=0.0)).mass` |
+| `hep.nth(x, k, fill=None)` | `ak.pad_none(x, k + 1)[:, k]`: the k-th object of each event, None where there is none; with `fill`, `ak.fill_none(..., fill)` (plain numbers, the fastest). `x` a collection: the k-th object as a record whose fields are computed when used: `j1 = hep.nth(df.Jet, 0)`, `j1.btag`, `mjj = aks.fill_none((aks.p4(j1) + aks.p4(j2)).mass, 0.0)` |
 | `hep.pick(x, index, fill)` | the object at a per-event index (`fill` where the index is < 0 or out of range) |
 | `hep.count(mask)` | `ak.sum(mask, axis=1)` |
 | `hep.per_event_sum(x, mask=None)` | `ak.sum(x[mask], axis=1)`, in the values' own type |
@@ -375,6 +376,10 @@ multiply-adds, ~1e-16 relative, invisible once stored as float.
   `np.cumsum`) are refused at run time; totals are results (`df.sum`, `df.hist`). This is what makes partial
   recomputation under variations exact.
 * A lazy column has no truth value and no length: use `& | ~` and `aks.where`, not `and` / `or` / `if`.
+* **None** (a missing value: `hep.nth` without `fill`, the 4-vector of a missing object, awkward option types)
+  propagates through arithmetic and comparisons (`mjj > 400` is None where `mjj` is). A selection treats None as
+  failing (the event is dropped); a histogram or a sum does not fill an entry with None in any of its columns or in
+  its weight; `aks.fill_none(x, value)` replaces it.
 * Indexing follows awkward, also in expression strings: element *i* of every row is `x[:, i]`
   (`"weight * LHEPdfWeight[:, 3]"`); `x[3]` would be row 3 (not row-local: refused).
 * User functions (`apply`) must be row-local and deterministic, and return one entry per input row.

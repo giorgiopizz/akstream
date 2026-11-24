@@ -327,25 +327,53 @@ def _boost_hists(axes, ntargets):
     return hit
 
 
+def _per_row_none(x):
+    """(numpy values, valid or None) of a per-row column: an option array (None: no value) is filled with 0."""
+    if isinstance(x, ak.Array) and x.ndim == 1:
+        if x.layout.is_option:
+            return np.asarray(ak.fill_none(x, 0)), ~np.asarray(ak.is_none(x), bool)
+        return np.asarray(x), None
+    return x, None
+
+
 def _flat_columns(columns, weight):
-    """flat columns and weights of one fill: jagged columns give one entry per object, per-row ones are repeated."""
+    """flat columns and weights of one fill: jagged columns give one entry per object, per-row ones are repeated. An
+    entry with None in any column or in the weight is not filled; `keep` (None: every entry) says which were kept,
+    before the removal (to select the matching rows of a per-entry target)."""
     counts = None
     for c in columns:
-        if not isinstance(c, np.ndarray):
+        if isinstance(c, ak.Array) and c.ndim > 1:
             counts = np.asarray(ak.num(c, axis=1))
             break
-    flat = []
+    flat, keep = [], None
+
+    def drop(valid):
+        nonlocal keep
+        if valid is not None:
+            keep = valid if keep is None else keep & valid
+
     for c in columns:
-        if isinstance(c, np.ndarray):
-            flat.append(c if counts is None else np.repeat(c, counts))
-        else:
+        if isinstance(c, ak.Array) and c.ndim > 1:
             v = ak.flatten(c, axis=1)
-            flat.append(np.asarray(ak.fill_none(v, np.nan)) if v.layout.is_option else np.asarray(v))
+            if v.layout.is_option:
+                drop(~np.asarray(ak.is_none(v), bool))
+                v = ak.fill_none(v, 0)
+            flat.append(np.asarray(v))
+        else:
+            c, valid = _per_row_none(c)
+            flat.append(c if counts is None else np.repeat(c, counts))
+            drop(valid if counts is None or valid is None else np.repeat(valid, counts))
     if weight is not None:
+        weight, valid = _per_row_none(weight)
         weight = np.asarray(weight, np.float64)
         if counts is not None:
             weight = np.repeat(weight, counts)
-    return flat, weight, counts
+            valid = None if valid is None else np.repeat(valid, counts)
+        drop(valid)
+    if keep is not None:
+        flat = [x[keep] for x in flat]
+        weight = None if weight is None else weight[keep]
+    return flat, weight, counts, keep
 
 
 def accumulate(axes, columns, weight, target=None, ntargets=1, n=None):
@@ -354,10 +382,12 @@ def accumulate(axes, columns, weight, target=None, ntargets=1, n=None):
     and accumulated by boost-histogram (C++); ROOT-convention axes by numpy (bin index + bincount)."""
     size = int(np.prod([a.size for a in axes])) if axes else 1
     total = size * ntargets
-    flat, w, counts = _flat_columns(columns, weight)
+    flat, w, counts, keep = _flat_columns(columns, weight)
     flat = [a.values(x) if isinstance(a, IntCategory) else x for a, x in zip(axes, flat)]
     if target is not None and counts is not None:
         target = np.repeat(target, counts)
+    if target is not None and keep is not None:
+        target = np.asarray(target)[keep]
     rows = len(flat[0]) if flat else (len(w) if w is not None else int(n or 0))
     hists = _boost_hists(axes, ntargets) if axes and rows > 0 else None
     if hists is not None:

@@ -72,7 +72,7 @@ df.hist("mjj", (40, 0, 4000))
 | `df.eval("...")`, `df[["a", "b"]]`, `df.columns`, `df.branches`, `df.dtypes` | as pandas |
 | `coll[mask]`, `coll[index]`, `coll.pt`, `coll[["pt", "eta"]]`, `coll.p4` | collections: masks / sorts / indices touch only the fields used |
 | operators, `np.<ufunc>(e)`, `np.where/clip/stack/...`, `aks.<any awkward function>` | lazy |
-| `aks.p4(pt, eta, phi, m, **fields)`, `coll.p4`, `v1 + v2`, `.mass .pt .eta .phi .px ...`, `aks.collins_soper(l1, l2, q1)`, `aks.delta_r` | 4-vectors (C++, `akstream.vector`); extra fields ride along (`aks.p4(..., pdgId=df.mu1_pdgId)` → `mu1.pdgId`; a sum has none); with `rdf_compatible`: ROOT's `PtEtaPhiMVector` arithmetic (`.rapidity` too) |
+| `aks.p4(pt, eta, phi, m, **fields)`, `aks.p4(record)`, `coll.p4`, `v1 + v2`, `.mass .pt .eta .phi .px ...`, `aks.collins_soper(l1, l2, q1)`, `aks.delta_r` | 4-vectors (C++, `akstream.vector`); extra fields ride along (`aks.p4(..., pdgId=df.mu1_pdgId)` → `mu1.pdgId`; a sum has none); with `rdf_compatible`: ROOT's `PtEtaPhiMVector` arithmetic (`.rapidity` too) |
 | `hep.max_mass_pair(df.Jet)`, `hep.pick(df.Jet.pt, idx, 0)`, ... | the `akstream.hep` kernels on lazy columns (tuples of lazy columns where they return tuples) |
 | `aks.checked(value, condition, message)` | `value`, with `ValueError(message)` if `condition` fails on a row |
 | `df.apply(fn, columns, outputs=, when=, prefix=, **kw)` | `fn(chunk dict, **kw) -> dict`: a new frame with its outputs as columns |
@@ -129,7 +129,7 @@ bit-identical to the equivalent awkward code (dtype promotion included):
 
 | | replaces |
 |---|---|
-| `hep.nth(x, k, fill)`, `hep.pick(x, index, fill)` | `ak.fill_none(ak.pad_none(x, k + 1)[:, k], fill)`, `ak.firsts(x[local == index])`; `hep.nth(df.Jet, 0, fill=0.0)` (a collection or jagged 4-vectors) is the k-th 4-vector |
+| `hep.nth(x, k, fill=None)`, `hep.pick(x, index, fill)` | `ak.pad_none(x, k + 1)[:, k]` (None where there is no k-th object; with `fill`: `ak.fill_none(..., fill)`), `ak.firsts(x[local == index])`; `hep.nth(df.Jet, 0)` is the leading jet's record (`j1.pt`, `aks.p4(j1)`) |
 | `hep.select_sort(keep, key, *fields)` | `x[keep][ak.argsort(key[keep], ascending=False, stable=True)]` for every field |
 | `hep.count(mask)`, `hep.per_event_sum(x, mask)` | `ak.sum(mask, axis=1)`, `ak.sum(ak.where(mask, x, 0), axis=1)` |
 | `hep.isolated(eta, phi, refs, min_dr2)`, `hep.between(x, lo, hi)` | Delta R cleaning against per-event directions, per-event bounds |
@@ -168,7 +168,7 @@ differently) so its floating point matches numpy exactly.
 ## Tests
 
     pip install -e .[test,onnx]
-    pytest                                   # 177 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
+    pytest                                   # 178 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
 
 The tests that compare with ROOT itself (GenVector arithmetic) run when PyROOT is importable and are skipped otherwise.
 

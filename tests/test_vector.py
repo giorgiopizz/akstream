@@ -254,45 +254,60 @@ def test_p4_extra_fields(rdf):
 
 
 @pytest.mark.parametrize("rdf", [False, True])
-def test_nth_of_4vectors(rdf):
+def test_p4_with_none(rdf):
+    """4-vectors of per-event components with None (an event without that object): None kinematics there, the same
+    numbers as without None elsewhere; a sum is None where either vector is."""
     from akstream import hep
     rng = np.random.default_rng(4)
-    c = rng.integers(0, 4, 500)
+    c = rng.integers(0, 4, 400)
     jag = lambda lo, hi: ak.unflatten(rng.uniform(lo, hi, c.sum()).astype(np.float32), c)  # noqa: E731
     pt, eta, phi, m = jag(20, 200), jag(-4.7, 4.7), jag(-np.pi, np.pi), jag(1, 20)
-    v = vector.p4(pt, eta, phi, m, rdf, flav=ak.values_astype(pt > 50, np.int32))
-    for k, fill, fv in ((0, 0.0, (0.0,) * 4), (1, aks.p4(10.0, 1.0, 0.5, 2.0), (10.0, 1.0, 0.5, 2.0))):
-        got = hep.nth(v, k, fill=fill)
-        assert type(got) is type(v)
-        ref = vector.p4(*(ak.to_numpy(ak.fill_none(ak.pad_none(x, k + 1)[:, k], f)).astype(np.float64)
-                          for x, f in zip((pt, eta, phi, m), fv)), rdf)
-        for f in ("pt", "eta", "phi", "mass", "px", "e"):
-            np.testing.assert_array_equal(getattr(got, f), getattr(ref, f), err_msg=f"{k} {f}")
-        np.testing.assert_array_equal(got.flav, ak.to_numpy(ak.fill_none(ak.pad_none(v.flav, k + 1)[:, k], 0)))
-    if not rdf:  # a sum of jagged vectors (cartesian components only): its k-th cartesian components
-        s = v + v
-        got, ref = hep.nth(s, 1, fill=0.0), hep.nth(v, 1, fill=0.0) + hep.nth(v, 1, fill=0.0)
-        for f in ("px", "pz", "e", "mass"):
-            np.testing.assert_array_equal(getattr(got, f), getattr(ref, f), err_msg=f)
-    with pytest.raises(TypeError, match="4-vector fill"):
-        hep.nth(pt, 0, fill=aks.p4(0, 0, 0, 0))
+    j = [[hep.nth(x, k) for x in (pt, eta, phi, m)] for k in (0, 1)]
+    for k in (0, 1):
+        assert ak.to_list(j[k][0]) == ak.to_list(ak.pad_none(pt, k + 1)[:, k])
+    v1, v2 = vector.p4(*j[0], rdf), vector.p4(*j[1], rdf)
+    f1, f2 = (vector.p4(*(hep.nth(x, k, fill=0.0) for x in (pt, eta, phi, m)), rdf) for k in (0, 1))
+    has1, has2 = c > 0, c > 1
+    for got, ref, has in ((v1.mass, f1.mass, has1), ((v1 + v2).mass, (f1 + f2).mass, has2),
+                          ((v1 + v2).eta, (f1 + f2).eta, has2), (v1.px, f1.px, has1)):
+        got = ak.Array(got)
+        assert np.array_equal(~np.asarray(ak.is_none(got)), has)
+        np.testing.assert_array_equal(ak.to_numpy(got[has]), np.asarray(ref)[has])
 
 
 @pytest.mark.parametrize("rdf", [False, True])
-def test_lazy_nth_of_a_collection(dimuon_file, rdf):
-    """the leading-pair VBF variables from hep.nth(df.Jet, k), against building the vectors from the components."""
+def test_lazy_nth_record_and_none(dimuon_file, rdf):
+    """j1 = hep.nth(df.Jet, 0) (None without a jet), mjj of aks.p4(j1) + aks.p4(j2) with None, under a jet pT
+    variation: a selection treats None as failing, a histogram skips None, aks.fill_none fills; against awkward."""
     from akstream import hep
     df = aks.read_root(dimuon_file, rdf_compatible=rdf)
+    df.vary(("Jet", "pt"), up=df.Jet.pt * np.float32(1.1), name="jes")
     df["Jet"] = df.Jet[df.Jet.pt > 30]
     df["Jet"] = df.Jet[aks.argsort(df.Jet.pt, axis=1, ascending=False)]
-    j1, j2 = (hep.nth(df.Jet, i, fill=aks.p4(0, 0, 0, 0)) for i in (0, 1))
-    c1, c2 = (aks.p4(*(hep.nth(getattr(df.Jet, f), i, fill=0.0) for f in ("pt", "eta", "phi", "mass")))
-              for i in (0, 1))
-    got = {k: df.peek(e, n=10 ** 6) for k, e in (("mjj", (j1 + j2).mass), ("ref", (c1 + c2).mass),
-                                                 ("deta", abs(j1.eta - j2.eta)), ("deta_ref", abs(c1.eta - c2.eta)))}
-    np.testing.assert_array_equal(np.asarray(got["mjj"]), np.asarray(got["ref"]))
-    np.testing.assert_array_equal(np.asarray(got["deta"]), np.asarray(got["deta_ref"]))
-    assert (np.asarray(got["mjj"]) > 0).sum() > 100
+    j1, j2 = hep.nth(df.Jet, 0), hep.nth(df.Jet, 1)
+    df["mjj"] = (aks.p4(j1) + aks.p4(j2)).mass
+    df["mjj0"] = aks.fill_none(df.mjj, 0.0)
+    vbf = df[df.mjj > 200]
+    h_pt = df.hist(j1.pt, bins=(20, 0, 400))
+    h_mjj = df.hist(df.mjj, bins=(20, 0, 2000))
+    n_vbf, hp, hm, out, s_pt = aks.compute(aks.varied(vbf.count()), aks.varied(h_pt), aks.varied(h_mjj),
+                                           df.collect(["mjj0"]), df.sum(j1.pt))
+
+    t = __import__("uproot").open(dimuon_file)["Events"].arrays(library="ak", how="zip")
+    for name, scale in (("nominal", 1.0), ("jes:up", 1.1)):
+        jets = ak.zip({f: t.Jet[f] for f in ("eta", "phi", "mass")} | {"pt": t.Jet.pt * np.float32(scale)})
+        jets = jets[jets.pt > 30]
+        jets = ak.pad_none(jets[ak.argsort(jets.pt, axis=1, ascending=False)], 2)
+        v = [vector.p4(*(ak.to_numpy(ak.fill_none(jets[f][:, k], 0.0)).astype(np.float64)
+                         for f in ("pt", "eta", "phi", "mass")), rdf) for k in (0, 1)]
+        has1, has2 = ~np.asarray(ak.is_none(jets[:, 0])), ~np.asarray(ak.is_none(jets[:, 1]))
+        mjj = np.asarray((v[0] + v[1]).mass)
+        assert n_vbf[name] == int(((mjj > 200) & has2).sum()), name
+        np.testing.assert_array_equal(hp[name].values(), np.histogram(np.asarray(v[0].pt)[has1], 20, (0, 400))[0])
+        np.testing.assert_array_equal(hm[name].values(), np.histogram(mjj[has2], 20, (0, 2000))[0])
+        if name == "nominal":
+            np.testing.assert_array_equal(np.asarray(out["mjj0"]), np.where(has2, mjj, 0.0))
+            assert s_pt == pytest.approx(float(np.asarray(v[0].pt)[has1].sum()), rel=1e-12)  # None not summed
 
 
 def test_lazy_p4_extra_fields(dimuon_file):

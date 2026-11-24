@@ -99,12 +99,19 @@ def _unwrap_all(args):
     return _unwrap(args)
 
 
-def p4(pt, eta, phi, mass, rdf_compatible=None, **fields):
+def p4(pt, eta=None, phi=None, mass=None, rdf_compatible=None, **fields):
     """Lorentz vectors from (pt, eta, phi, mass): a column of akstream.vector.P4 (lazy) for frame columns, a P4 for
     arrays. (mu1 + mu2).mass, .pt, .eta, .phi, .px ... are columns as well. rdf_compatible: ROOT's PtEtaPhiMVector
     arithmetic (vector.RootP4), bit for bit as RDataFrame code (default: the read_root setting for columns, else
     False). Extra fields are carried along: aks.p4(..., pdgId=df.mu1_pdgId) has mu1.pdgId (a sum of vectors has
-    none)."""
+    none). One argument: a collection or record with pt, eta, phi, mass fields (aks.p4(df.Jet), aks.p4(hep.nth(df.Jet,
+    0))). None components (an event without that object) give None kinematics."""
+    if eta is None and phi is None and mass is None:
+        rec = pt
+        get = (lambda f: rec[f]) if isinstance(rec, (dict, _ak.Array)) else (lambda f: getattr(rec, f))
+        pt, eta, phi, mass = (get(f) for f in ("pt", "eta", "phi", "mass"))
+    elif eta is None or phi is None or mass is None:
+        raise TypeError("p4: give pt, eta, phi and mass, or one collection / record with those fields")
     _vector.check_fields(fields)
     if _lazy(pt, eta, phi, mass, *fields.values()):
         if rdf_compatible is None:

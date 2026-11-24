@@ -172,6 +172,7 @@ class Frame:
     def _select(self, mask):
         if mask.space is not self._space:
             raise ValueError("the selection mask must be built from this frame's columns")
+        mask = call(_selection_mask, mask, _name="mask")  # None (e.g. mjj of an event without two jets): fails
         space = Space(self._dataset, parent=self._space, mask=mask.node)
         inherited = {k: self._lookup(k) for k in self.columns}  # every defined column, in this frame's space
         return Frame(self._dataset, space, inherited=inherited, parent=self, collections=self._new_collections)
@@ -551,6 +552,14 @@ class GroupBy:
 
     def count(self):
         return res.GroupSum(self.frame, self.key, None, None)
+
+
+def _selection_mask(mask):
+    """a selection mask with None (an option array: a comparison with a missing value) as numpy bool, None failing;
+    anything else as it is (checked when the rows are taken)."""
+    if isinstance(mask, ak.Array) and mask.ndim == 1 and mask.layout.is_option:
+        return np.asarray(ak.fill_none(mask, False), bool)
+    return mask
 
 
 def _from_cpp(expr):

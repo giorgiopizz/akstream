@@ -14,8 +14,8 @@ where numpy uses that library too (any CPU without AVX-512, whose numpy has its 
 code (rdf_compatible) on any CPU.
 
     offsets, flat = hep.flat(jagged)          # ListOffsetArray -> (int64 offsets, numpy content)
-    hep.nth(jagged, k, fill)                  # k-th object of each event, `fill` where there is none
-    hep.nth(df.Jet, 0, fill=0.0)              # the k-th 4-vector (a collection or jagged 4-vectors): .pt, + , .mass
+    hep.nth(jagged, k, fill=None)             # k-th object of each event: None (or `fill`) where there is none
+    hep.nth(df.Jet, 0)                        # the leading jet's record per event (j1.pt, aks.p4(j1)), None if none
     hep.pick(jagged, index, fill)             # the object at a per-event index
     hep.count(mask)                           # number of True per event (jagged boolean)
     hep.per_event_sum(values, mask=None)      # sum per event
@@ -114,58 +114,30 @@ def _filled_dtype(dtype, fill):
     return np.result_type(dtype, np.asarray(fill).dtype)
 
 
-_P4_FIELDS = ("pt", "eta", "phi", "mass")
+def nth(x, k, fill=None):
+    """the k-th object (0 = first) of every event: ak.pad_none(x, k + 1)[:, k], None for events with fewer objects;
+    with `fill`, ak.fill_none(..., fill) (plain numbers, the dtype of that expression).
 
-
-def nth(x, k, fill):
-    """the k-th object (0 = first) of every event, `fill` for events with fewer objects; the dtype is that of
-    ak.fill_none(ak.pad_none(x, k + 1)[:, k], fill).
-
-    x a collection (df.Jet) or jagged 4-vectors (df.Jet.p4, vector.p4 of jagged arrays): the k-th 4-vector of every
-    event (a P4, a RootP4 with rdf_compatible), so hep.nth(df.Jet, 0, fill=0.0) + hep.nth(df.Jet, 1, fill=0.0) is the
-    leading pair. fill: a number (for each of pt, eta, phi, mass) or a 4-vector (aks.p4(0, 0, 0, 0)); the extra fields
-    of the vectors (pdgId=...) are filled with 0."""
+    x a collection (df.Jet): the k-th object of every event as a record whose fields are nth of each field, computed
+    only when used (j1 = hep.nth(df.Jet, 0); j1.pt, j1.btag, aks.p4(j1)), None where there is none."""
     from .expr import Collection
-    from .vector import P4
-    if isinstance(x, Collection) or (isinstance(x, ak.Array) and set(_P4_FIELDS) <= set(x.fields)):
-        x = x.p4 if isinstance(x, Collection) else _vector().p4(*(x[f] for f in _P4_FIELDS))
-    if isinstance(fill, P4):
-        fill = tuple(float(np.asarray(getattr(fill, f)).reshape(-1)[0]) for f in _P4_FIELDS)
+    if isinstance(x, Collection):
+        return Collection(x.space, x.fields, lambda f: _nth(x.field(f), k, fill), None, x._name)
     return _nth(x, k, fill)
-
-
-def _vector():
-    from . import vector
-    return vector
 
 
 @lazy()
 def _nth(x, k, fill):
-    if isinstance(x, dict):
-        return _nth_p4(x, k, fill)
-    if isinstance(fill, tuple):
-        raise TypeError("hep.nth: a 4-vector fill needs 4-vectors (a collection or a P4), not a column of numbers")
     offsets, values = flat(x)
     n = np.diff(offsets)
-    out = np.full(len(n), fill, dtype=_filled_dtype(values.dtype, fill))
     has = n > k
+    if fill is None:  # an option array: None where the event has no k-th object
+        out = np.zeros(len(n), dtype=values.dtype)
+        out[has] = values[offsets[:-1][has] + k]
+        return ak.Array(ak.contents.ByteMaskedArray(ak.index.Index8(has.view(np.int8)), ak.contents.NumpyArray(out),
+                                                    valid_when=True))
+    out = np.full(len(n), fill, dtype=_filled_dtype(values.dtype, fill))
     out[has] = values[offsets[:-1][has] + k]
-    return out
-
-
-def _nth_p4(v, k, fill):
-    """nth of jagged 4-vectors: the k-th (pt, eta, phi, mass) rebuilt as a vector (the cartesian components are
-    elementwise in them, so they are those of the k-th object), or the k-th cartesian components of a sum."""
-    vector = _vector()
-    fill = fill if isinstance(fill, tuple) else (fill,) * 4
-    kin = set(_P4_FIELDS) | set(vector.CARTESIAN)
-    extras = {f: _nth(dict.__getitem__(v, f), k, 0) for f in v if f not in kin}
-    if all(dict.__contains__(v, f) for f in _P4_FIELDS):
-        parts = [_nth(dict.__getitem__(v, f), k, x) for f, x in zip(_P4_FIELDS, fill)]
-        return vector.p4(*parts, rdf_compatible=isinstance(v, vector.RootP4), **extras)
-    f = vector.p4(*(np.array([x], np.float64) for x in fill))
-    out = vector.P4.from_cartesian(*(_nth(v[c], k, float(f[c][0])) for c in vector.CARTESIAN))
-    out.update(extras)
     return out
 
 
