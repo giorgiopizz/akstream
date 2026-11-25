@@ -13,11 +13,22 @@ so the results are always those of awkward (values, dtypes, and the "var * T" ty
     take(x, index)             -> rows of x, contiguous, or None
     combine(a, b, from_b)      -> rows from a / b interleaved, or None
     concat(pieces)             -> rows of every piece one after the other, or None
+    repeat(values, counts)     -> np.repeat(values, counts)
+
+The gathers run in akstream._hep (one pass, elements copied by size: the same bits as the numpy gathers below, which
+remain for an element size it does not handle).
 """
 import operator
 
 import awkward as ak
 import numpy as np
+
+try:
+    from . import _hep
+except ImportError:  # the pure-numpy paths below
+    _hep = None
+
+_SIZES = (1, 2, 4, 8)
 
 
 def simple(x):
@@ -45,6 +56,8 @@ def simple(x):
         data = np.asarray(content.data)
         if len(starts) and np.array_equal(starts[1:], stops[:-1]):  # contiguous view
             return offsets, data[starts[0]:stops[-1]] if len(starts) else data[:0]
+        if _native(data):
+            return _hep.gather_rows(data, starts, counts)
         return offsets, data[_gather_index(starts, counts, offsets)]
     return None
 
@@ -52,6 +65,19 @@ def simple(x):
 def _plain(content):
     return (isinstance(content, ak.contents.NumpyArray) and content.data.ndim == 1
             and content.parameter("__array__") is None)
+
+
+def _native(*arrays):
+    return _hep is not None and all(a.ndim == 1 and a.dtype.itemsize in _SIZES and not a.dtype.hasobject
+                                    for a in arrays)
+
+
+def repeat(values, counts):
+    """np.repeat(values, counts) (one value per row repeated over the row's objects)."""
+    values, counts = np.asarray(values), np.asarray(counts)
+    if counts.ndim == 1 and counts.dtype.kind in "iu" and _native(values):
+        return _hep.repeat(values, counts)
+    return np.repeat(values, counts)
 
 
 def _gather_index(starts, counts, offsets):
@@ -95,7 +121,7 @@ def elementwise(fn, args, kwargs):
         if isinstance(a, np.ndarray) and a.ndim == 1 and not isinstance(args[i], ak.Array):
             if len(a) != n:
                 return None
-            flat[i] = np.repeat(a, counts)
+            flat[i] = repeat(a, counts)
         elif isinstance(a, np.ndarray) and a.ndim != 1 and a.ndim != 0:
             return None
     if fn is np.where:  # ak.where promotes Python scalars as 64-bit values (not NumPy 2's weak scalars)
@@ -114,6 +140,8 @@ def mask(x, m):
     (ox, dx), (om, dm) = sx, sm
     if len(ox) != len(om) or not np.array_equal(ox, om):
         return None
+    if _native(dx):
+        return wrap(*_hep.mask_rows(ox, dx, dm))
     kept = np.zeros(len(dm) + 1, np.int64)  # number of selected objects before each object
     np.cumsum(dm, out=kept[1:])
     return wrap(kept[ox], dx[dm])
@@ -128,6 +156,8 @@ def index(x, i):
     (ox, dx), (oi, di) = sx, si
     if len(ox) != len(oi):
         return None
+    if _native(dx):
+        return wrap(oi, _hep.index_rows(ox, dx, oi, di.astype(np.int64, copy=False)))
     ci = np.diff(oi)
     n = np.repeat(np.diff(ox), ci)
     pos = di.astype(np.int64)
@@ -145,6 +175,8 @@ def take(x, index):
         return None
     offsets, data = s
     index = np.asarray(index, dtype=np.int64)
+    if _native(data):
+        return wrap(*_hep.take_rows(offsets, data, index))
     starts, counts = offsets[:-1][index], np.diff(offsets)[index]
     out = np.zeros(len(index) + 1, np.int64)
     np.cumsum(counts, out=out[1:])
@@ -173,6 +205,8 @@ def combine(a, b, from_b):
         return None
     (oa, da), (ob, db) = sa, sb
     from_b = np.asarray(from_b, dtype=bool)
+    if _native(da, db):
+        return wrap(*_hep.combine_rows(oa, da, ob, db, from_b))
     counts = np.empty(len(from_b), np.int64)
     counts[~from_b] = np.diff(oa)
     counts[from_b] = np.diff(ob)

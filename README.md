@@ -168,7 +168,7 @@ differently) so its floating point matches numpy exactly.
 ## Tests
 
     pip install -e .[test,onnx]
-    pytest                                   # 178 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
+    pytest                                   # 235 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
 
 The tests that compare with ROOT itself (GenVector arithmetic) run when PyROOT is importable and are skipped otherwise.
 

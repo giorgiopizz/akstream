@@ -658,12 +658,12 @@ def _as_field(value, counts, label):
             raise ValueError(f"{label}: {len(bad)} rows with another number of objects than the collection (first: row "
                              f"{bad[0]}, {n[bad[0]]} vs {counts[bad[0]]})")
         return value
-    from .jagged import wrap
+    from .jagged import repeat, wrap
     offsets = np.zeros(len(counts) + 1, np.int64)
     np.cumsum(counts, out=offsets[1:])
     if np.ndim(value) == 0:
         return wrap(offsets, np.full(offsets[-1], value))
-    return wrap(offsets, np.repeat(np.asarray(value), counts))
+    return wrap(offsets, repeat(value, counts))
 
 
 def _is_field_of(value, name, frame):

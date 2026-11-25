@@ -12,6 +12,7 @@ import functools
 import awkward as ak
 import numpy as np
 
+from . import jagged
 from . import rows as R
 from .graph import lift
 
@@ -361,14 +362,14 @@ def _flat_columns(columns, weight):
             flat.append(np.asarray(v))
         else:
             c, valid = _per_row_none(c)
-            flat.append(c if counts is None else np.repeat(c, counts))
-            drop(valid if counts is None or valid is None else np.repeat(valid, counts))
+            flat.append(c if counts is None else jagged.repeat(c, counts))
+            drop(valid if counts is None or valid is None else jagged.repeat(valid, counts))
     if weight is not None:
         weight, valid = _per_row_none(weight)
         weight = np.asarray(weight, np.float64)
         if counts is not None:
-            weight = np.repeat(weight, counts)
-            valid = None if valid is None else np.repeat(valid, counts)
+            weight = jagged.repeat(weight, counts)
+            valid = None if valid is None else jagged.repeat(valid, counts)
         drop(valid)
     if keep is not None:
         flat = [x[keep] for x in flat]
@@ -385,7 +386,7 @@ def accumulate(axes, columns, weight, target=None, ntargets=1, n=None):
     flat, w, counts, keep = _flat_columns(columns, weight)
     flat = [a.values(x) if isinstance(a, IntCategory) else x for a, x in zip(axes, flat)]
     if target is not None and counts is not None:
-        target = np.repeat(target, counts)
+        target = jagged.repeat(target, counts)
     if target is not None and keep is not None:
         target = np.asarray(target)[keep]
     rows = len(flat[0]) if flat else (len(w) if w is not None else int(n or 0))
@@ -426,14 +427,14 @@ def _fill_arrays(axes, columns, weight):
     flat = []
     for c in columns:
         if isinstance(c, np.ndarray):
-            flat.append(c if counts is None else np.repeat(c, counts))
+            flat.append(c if counts is None else jagged.repeat(c, counts))
         else:
             v = ak.flatten(c, axis=1)
             flat.append(np.asarray(ak.fill_none(v, np.nan)) if v.layout.is_option else np.asarray(v))
     if weight is not None:
         weight = np.asarray(weight, np.float64)
         if counts is not None:
-            weight = np.repeat(weight, counts)
+            weight = jagged.repeat(weight, counts)
     index = np.zeros(len(flat[0]) if flat else (len(weight) if weight is not None else 0), np.int64)
     stride = 1
     for axis, x in zip(reversed(axes), reversed(flat)):

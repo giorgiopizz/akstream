@@ -41,6 +41,8 @@ except ImportError as err:  # pragma: no cover
     raise ImportError("akstream.hep needs the compiled extension akstream._hep: install the package with "
                       "`pip install -e .` (or `python setup.py build_ext --inplace`)") from err
 
+from . import jagged as _jagged
+
 _SUM_TYPES = (np.float32, np.float64, np.int64)
 
 
@@ -105,7 +107,7 @@ def counts_of(offsets):
 
 def event_of(offsets):
     """the event index of every object."""
-    return np.repeat(np.arange(len(offsets) - 1), np.diff(offsets))
+    return _jagged.repeat(np.arange(len(offsets) - 1), np.diff(offsets))
 
 
 def _filled_dtype(dtype, fill):
@@ -186,7 +188,7 @@ def per_event_sum_flat(offsets, values):
 def broadcast(per_event, x):
     """one value per object of `x` from one value per event."""
     offsets, _ = flat(x)
-    return np.repeat(np.asarray(per_event), np.diff(offsets))
+    return _jagged.repeat(per_event, np.diff(offsets))
 
 
 @lazy()
@@ -206,7 +208,7 @@ def isolated(eta, phi, references, min_dr2):
     n = np.diff(offsets)
     keep = np.ones(len(e), dtype=bool)
     for ref_eta, ref_phi in references:
-        re, rp = np.repeat(np.asarray(ref_eta), n), np.repeat(np.asarray(ref_phi), n)
+        re, rp = _jagged.repeat(ref_eta, n), _jagged.repeat(ref_phi, n)
         keep &= (e - re) ** 2 + delta_phi(rp, p) ** 2 >= min_dr2
     return keep
 
@@ -216,7 +218,7 @@ def between(x, lo, hi):
     """flat boolean per object: lo < x < hi with one (lo, hi) per event."""
     offsets, v = flat(x)
     n = np.diff(offsets)
-    return (v > np.repeat(np.asarray(lo), n)) & (v < np.repeat(np.asarray(hi), n))
+    return (v > _jagged.repeat(lo, n)) & (v < _jagged.repeat(hi, n))
 
 
 # ---------------------------------------------------------------- selection and sorting

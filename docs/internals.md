@@ -18,14 +18,14 @@ About 5,600 lines: 13 Python modules and one C++ file. Reading order for someone
 | `execute.py` | 649 | `ChunkContext` (nominal values of a chunk, row indices of each space, freeing), the per-node delta engine (`engine="delta"`, `exact=True`), `_apply` (calls the node function, with the jagged fast paths) |
 | `fused.py` | 692 | the default variation engine: phase 1 (rows that change), phase 2 (recompute on those rows, several variations stacked), histogram and file corrections |
 | `rows.py` | 312 | row-id set operations and row-wise take / concat / combine / compare for numpy, awkward and dict values |
-| `jagged.py` | 184 | fast paths for the `var * number` layout: elementwise ops, masks, integer indices, row gathers, on the flat numpy contents |
+| `jagged.py` | 218 | fast paths for the `var * number` layout: elementwise ops, masks, integer indices, row gathers, on the flat numpy contents (the gathers in C++) |
 | **I/O and results** | | |
 | `io.py` | 420 | `Dataset` (files, schema, collections, friends), chunked reading with uproot (bulk + lazy branches, read-ahead), friend alignment checks; `ArraysDataset` (`aks.from_arrays`): the same interface over arrays in memory |
 | `results.py` | 837 | histograms (own binning + boost-histogram fills), sums, group sums, cutflow, collect, `to_root` (one file per variation) |
 | **physics kernels** | | |
 | `hep.py` | 256 | `akstream.hep`: jagged kernels (`nth`, `pick`, `count`, `per_event_sum`, `isolated`, `between`, `select_sort`, `max_mass_pair`, ...), lazy-aware |
 | `vector.py` | 263 | `akstream.vector`: `P4` (lazy mass / pt / eta / phi), `RootP4` (ROOT GenVector arithmetic), `add`, `collins_soper`, `delta_phi`, `delta_r` |
-| `_hep.cpp` | 280 | the C++ extension (below) |
+| `_hep.cpp` | 742 | the C++ extension (below) |
 
 ## How a run goes
 
@@ -48,7 +48,7 @@ are stacked into one phase-2 pass; jagged operations on the plain `var * number`
 
 ## The C++ extension (`_hep.cpp`)
 
-Ten event loops, and the C math library elementwise, bound with pybind11. Every
+Ten event loops, the jagged-layout gathers, and the C math library elementwise, bound with pybind11. Every
 kernel works on the flat contents of jagged arrays plus their int64 offsets, and repeats the numpy formulation it
 replaces operation by operation: the file is compiled without fused multiply-add (`-ffp-contract=off`) and without the
 sin + cos → sincos fusion, so results are bit-identical to the numpy code where numpy itself uses the C math library
@@ -66,15 +66,16 @@ sin + cos → sincos fusion, so results are bit-identical to the numpy code wher
 | `p4_mass` | `P4.mass` | m = √\|E² − p²\| with the sign of E² − p² |
 | `p4_angles` | `P4.pt / .eta / .phi` | pt = hypot(px, py), η = asinh(pz / pt), φ = atan2(py, px), each computed only when asked for |
 | `cos`, `sin`, `sinh`, `cosh`, `log`, `atan2`, `hypot` | `hep.max_mass_pair`, `hep.best_pair`, `hep.met_shift`, `vector.RootP4` | the C math library elementwise (any shape), as ROOT calls it: the same bits on every CPU, which numpy's own SIMD versions (AVX-512) are not |
+| `gather_rows`, `take_rows`, `combine_rows`, `mask_rows`, `index_rows`, `repeat`, `segment_any` (any dtype of 1, 2, 4 or 8 bytes) | `jagged` (`x[rows]`, `x[mask]`, `x[index]`, per-row broadcasts), `rows` (variation row comparisons), `hep`, histogram fills | the row gathers of the `var * number` layout in one pass, elements copied by size: the same bits as the numpy gathers (`np.repeat` + `arange` + fancy indexing) they replace, which stay as the fallback for other element sizes |
 | `collins_soper` | `vector.collins_soper` | (φ_CS, cos θ_CS): boost to the pair rest frame, the Collins-Soper axes from the beams, the positive lepton's direction in that frame, in one loop instead of ~60 numpy temporaries |
 
-Everything else (masks, gathers, sorts by awkward, histogram binning) is numpy, awkward or boost-histogram.
+Everything else (elementwise arithmetic, sorts by awkward, histogram binning) is numpy, awkward or boost-histogram.
 `RootP4` (GenVector arithmetic) is numpy apart from those C math library calls: its cost is the transcendental
 functions, which a loop does not avoid.
 
 ## Tests
 
-`tests/` (178 tests, synthetic NanoAOD-like trees written in `conftest.py`): each feature against plain awkward /
+`tests/` (235 tests, synthetic NanoAOD-like trees written in `conftest.py`): each feature against plain awkward /
 numpy on the same data; variations against brute-force recomputation; the ROOT-compatibility tests against ROOT
 itself when it is importable (skipped otherwise). `test_collections.py` covers the collection API, `test_api.py` the
 chain API, `test_vector.py` 4-vectors and RDataFrame compatibility, `test_jagged.py` the fast paths, `test_conversions.py`

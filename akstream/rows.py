@@ -190,6 +190,8 @@ def _flat_values(starts, stops, content):
     total = int(counts.sum())
     if total == 0:
         return data[:0]
+    if jagged._native(data):
+        return jagged._hep.gather_rows(data, starts, counts)[1]
     # element j of list i sits at starts[i] + j
     first = np.repeat(starts - np.concatenate([[0], np.cumsum(counts)[:-1]]), counts)
     return data[first + np.arange(total)]
@@ -216,10 +218,7 @@ def masked_row_differs(xa, xb, ma, mb):
         return None
     fa, fb, fma, fmb = (_flat_values(*p) for p in parts)
     diff = (fma != fmb) | (fma & _numpy_differs(fa, fb))
-    c = np.zeros(len(diff) + 1, np.int64)
-    np.cumsum(diff, out=c[1:])
-    bounds = np.concatenate([[0], np.cumsum(counts)])
-    return c[bounds[1:]] > c[bounds[:-1]]
+    return _row_any(diff, counts)
 
 
 def _flat_list_differs(la, lb):
@@ -243,12 +242,18 @@ def _flat_list_differs(la, lb):
     da, db = _flat_values(sa, ea, ca), _flat_values(sb, eb, cb)
     if da.dtype != db.dtype and (da.dtype.kind != db.dtype.kind):
         return None
-    diff = _numpy_differs(da, db)
-    c = np.zeros(len(diff) + 1, np.int64)
-    np.cumsum(diff, out=c[1:])
-    bounds = np.concatenate([[0], np.cumsum(counts)])
-    out[same] = c[bounds[1:]] > c[bounds[:-1]]
+    out[same] = _row_any(_numpy_differs(da, db), counts)
     return out
+
+
+def _row_any(flags, counts):
+    """per row of counts objects (in order): any of its flags."""
+    if jagged._hep is not None:
+        return jagged._hep.segment_any(np.asarray(flags, bool), counts)
+    c = np.zeros(len(flags) + 1, np.int64)
+    np.cumsum(flags, out=c[1:])
+    bounds = np.concatenate([[0], np.cumsum(counts)])
+    return c[bounds[1:]] > c[bounds[:-1]]
 
 
 def _numpy_differs(a, b):

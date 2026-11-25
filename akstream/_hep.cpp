@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
+#include <type_traits>
 #include <tuple>
 #include <vector>
 
@@ -475,8 +477,249 @@ py::tuple collins_soper(carray<double> px1, carray<double> py1, carray<double> p
     return py::make_tuple(phi, cos_theta);
 }
 
+// ---------------------------------------------------------------- jagged layout (akstream.jagged)
+// Row operations on (offsets, flat contents) of any dtype: elements are copied by size (1, 2, 4 or 8 bytes), so the
+// results are bit for bit those of the numpy gathers they replace, in one pass without index temporaries.
+namespace {
+py::array flat1d(py::array a) {
+    if (a.ndim() != 1) throw py::value_error("1-d array expected");
+    return py::array::ensure(a, py::array::c_style);
+}
+
+// a new 1-d array of n elements of a's dtype (an explicit shape: py::array(dtype, {n}) is the borrowed-handle overload)
+py::array empty_like(const py::array &a, i64 n) {
+    return py::array(a.dtype(), std::vector<py::ssize_t>{static_cast<py::ssize_t>(n)});
+}
+
+template <typename F>
+void by_size(py::ssize_t size, F &&f) {
+    switch (size) {
+        case 1: f(std::integral_constant<i64, 1>{}); break;
+        case 2: f(std::integral_constant<i64, 2>{}); break;
+        case 4: f(std::integral_constant<i64, 4>{}); break;
+        case 8: f(std::integral_constant<i64, 8>{}); break;
+        default: throw py::type_error("element size not 1, 2, 4 or 8 bytes");
+    }
+}
+
+// rows (start, count) of src copied one after the other into dst
+template <i64 S>
+void copy_rows(const char *src, char *dst, const i64 *starts, const i64 *counts, i64 n) {
+    for (i64 i = 0; i < n; ++i) {
+        const i64 c = counts[i];
+        if (c == 1) std::memcpy(dst, src + starts[i] * S, S);
+        else if (c > 0) std::memcpy(dst, src + starts[i] * S, c * S);
+        dst += c * S;
+    }
+}
+
+py::array_t<i64> offsets_of(const i64 *counts, i64 n) {
+    py::array_t<i64> out(n + 1);
+    i64 *o = out.mutable_data();
+    o[0] = 0;
+    for (i64 i = 0; i < n; ++i) o[i + 1] = o[i] + counts[i];
+    return out;
+}
+}  // namespace
+
+// rows (starts, counts) of data, contiguous: (offsets, contents)
+py::tuple gather_rows(py::array data, carray<i64> starts, carray<i64> counts) {
+    data = flat1d(data);
+    const i64 n = starts.size(), size = data.shape(0);
+    if (counts.size() != n) throw py::value_error("starts and counts of different lengths");
+    const i64 *s = starts.data(), *c = counts.data();
+    for (i64 i = 0; i < n; ++i)
+        if (c[i] < 0 || s[i] < 0 || s[i] + c[i] > size) throw py::index_error("row out of the contents");
+    py::array_t<i64> offsets = offsets_of(c, n);
+    py::array out = empty_like(data, offsets.data()[n]);
+    const char *src = static_cast<const char *>(data.data());
+    char *dst = static_cast<char *>(out.mutable_data());
+    {
+        py::gil_scoped_release release;
+        by_size(data.itemsize(), [&](auto B) { copy_rows<decltype(B)::value>(src, dst, s, c, n); });
+    }
+    return py::make_tuple(offsets, out);
+}
+
+// rows index (negative from the end, as numpy) of the jagged (offsets, data): (offsets, contents)
+py::tuple take_rows(carray<i64> offsets, py::array data, carray<i64> index) {
+    data = flat1d(data);
+    const i64 rows = offsets.size() - 1, n = index.size();
+    const i64 *o = offsets.data(), *ix = index.data();
+    std::vector<i64> starts(n), counts(n);
+    for (i64 i = 0; i < n; ++i) {
+        i64 r = ix[i] < 0 ? ix[i] + rows : ix[i];
+        if (r < 0 || r >= rows) throw py::index_error("row index out of range");
+        starts[i] = o[r];
+        counts[i] = o[r + 1] - o[r];
+    }
+    py::array_t<i64> out_offsets = offsets_of(counts.data(), n);
+    py::array out = empty_like(data, out_offsets.data()[n]);
+    const char *src = static_cast<const char *>(data.data());
+    char *dst = static_cast<char *>(out.mutable_data());
+    {
+        py::gil_scoped_release release;
+        by_size(data.itemsize(),
+                [&](auto B) { copy_rows<decltype(B)::value>(src, dst, starts.data(), counts.data(), n); });
+    }
+    return py::make_tuple(out_offsets, out);
+}
+
+// len(from_b) rows: where from_b the next row of (ob, db), else the next row of (oa, da) (same element size):
+// (offsets, contents)
+py::tuple combine_rows(carray<i64> oa, py::array da, carray<i64> ob, py::array db, carray<bool> from_b) {
+    da = flat1d(da);
+    db = flat1d(db);
+    if (da.itemsize() != db.itemsize()) throw py::value_error("contents of different element sizes");
+    const i64 n = from_b.size(), na = oa.size() - 1, nb = ob.size() - 1;
+    const bool *fb = from_b.data();
+    const i64 *pa = oa.data(), *pb = ob.data();
+    i64 nfb = 0;
+    for (i64 i = 0; i < n; ++i) nfb += fb[i];
+    if (nfb != nb || n - nfb != na) throw py::value_error("from_b does not match the numbers of rows of a and b");
+    std::vector<i64> counts(n);
+    for (i64 i = 0, ia = 0, ib = 0; i < n; ++i) {
+        counts[i] = fb[i] ? pb[ib + 1] - pb[ib] : pa[ia + 1] - pa[ia];
+        if (fb[i]) ++ib; else ++ia;
+    }
+    py::array_t<i64> offsets = offsets_of(counts.data(), n);
+    py::array out = empty_like(da, offsets.data()[n]);
+    const char *sa = static_cast<const char *>(da.data()), *sb = static_cast<const char *>(db.data());
+    char *dst = static_cast<char *>(out.mutable_data());
+    {
+        py::gil_scoped_release release;
+        by_size(da.itemsize(), [&](auto B) {
+            constexpr i64 S = decltype(B)::value;
+            for (i64 i = 0, ia = 0, ib = 0; i < n; ++i) {
+                const i64 c = counts[i];
+                const char *src = fb[i] ? sb + pb[ib++] * S : sa + pa[ia++] * S;
+                if (c > 0) std::memcpy(dst, src, c * S);
+                dst += c * S;
+            }
+        });
+    }
+    return py::make_tuple(offsets, out);
+}
+
+// x[m] for the jagged (offsets, data) and a flat boolean m of the same layout: (offsets, contents)
+py::tuple mask_rows(carray<i64> offsets, py::array data, carray<bool> keep) {
+    data = flat1d(data);
+    const i64 rows = offsets.size() - 1, size = data.shape(0);
+    if (keep.size() != size) throw py::value_error("mask and contents of different lengths");
+    const i64 *o = offsets.data();
+    const bool *m = keep.data();
+    py::array_t<i64> out_offsets(rows + 1);
+    i64 *no = out_offsets.mutable_data();
+    {
+        py::gil_scoped_release release;
+        no[0] = 0;
+        for (i64 i = 0; i < rows; ++i) {
+            i64 k = 0;
+            for (i64 j = o[i]; j < o[i + 1]; ++j) k += m[j];
+            no[i + 1] = no[i] + k;
+        }
+    }
+    py::array out = empty_like(data, no[rows]);
+    const char *src = static_cast<const char *>(data.data());
+    char *dst = static_cast<char *>(out.mutable_data());
+    {
+        py::gil_scoped_release release;
+        by_size(data.itemsize(), [&](auto B) {
+            constexpr i64 S = decltype(B)::value;
+            i64 k = 0;
+            for (i64 j = 0; j < size; ++j)
+                if (m[j]) std::memcpy(dst + (k++) * S, src + j * S, S);
+        });
+    }
+    return py::make_tuple(out_offsets, out);
+}
+
+// x[i] for the jagged (ox, dx) and a jagged integer index (oi, pos) of positions inside each row (negative from the
+// end): the flat contents (offsets oi); IndexError where a position is out of its row
+py::array index_rows(carray<i64> ox, py::array dx, carray<i64> oi, carray<i64> pos) {
+    dx = flat1d(dx);
+    const i64 rows = ox.size() - 1;
+    if (oi.size() != rows + 1) throw py::value_error("index and array of different lengths");
+    if (oi.data()[rows] != pos.size()) throw py::value_error("index offsets and positions do not match");
+    const i64 *a = ox.data(), *b = oi.data(), *p = pos.data();
+    py::array out = empty_like(dx, pos.size());
+    const char *src = static_cast<const char *>(dx.data());
+    char *dst = static_cast<char *>(out.mutable_data());
+    bool bad = false;
+    {
+        py::gil_scoped_release release;
+        by_size(dx.itemsize(), [&](auto B) {
+            constexpr i64 S = decltype(B)::value;
+            for (i64 i = 0; i < rows && !bad; ++i) {
+                const i64 n = a[i + 1] - a[i];
+                for (i64 j = b[i]; j < b[i + 1]; ++j) {
+                    const i64 q = p[j] < 0 ? p[j] + n : p[j];
+                    if (q < 0 || q >= n) { bad = true; break; }
+                    std::memcpy(dst + j * S, src + (a[i] + q) * S, S);
+                }
+            }
+        });
+    }
+    if (bad) throw py::index_error("jagged index out of range of its row");
+    return out;
+}
+
+// np.repeat(values, counts) for 1-d values of any dtype
+py::array repeat(py::array values, carray<i64> counts) {
+    values = flat1d(values);
+    const i64 n = values.shape(0);
+    if (counts.size() != n) throw py::value_error("values and counts of different lengths");
+    const i64 *c = counts.data();
+    i64 total = 0;
+    for (i64 i = 0; i < n; ++i) {
+        if (c[i] < 0) throw py::value_error("negative count");
+        total += c[i];
+    }
+    py::array out = empty_like(values, total);
+    const char *src = static_cast<const char *>(values.data());
+    char *dst = static_cast<char *>(out.mutable_data());
+    {
+        py::gil_scoped_release release;
+        by_size(values.itemsize(), [&](auto B) {
+            constexpr i64 S = decltype(B)::value;
+            for (i64 i = 0; i < n; ++i)
+                for (i64 k = 0; k < c[i]; ++k, dst += S) std::memcpy(dst, src + i * S, S);
+        });
+    }
+    return out;
+}
+
+// per row (counts objects each, in order): whether any of its flags is true
+py::array_t<bool> segment_any(carray<bool> flags, carray<i64> counts) {
+    const i64 n = counts.size();
+    const i64 *c = counts.data();
+    const bool *f = flags.data();
+    i64 total = 0;
+    for (i64 i = 0; i < n; ++i) total += c[i];
+    if (total != flags.size()) throw py::value_error("counts do not add up to the number of flags");
+    py::array_t<bool> out(n);
+    bool *r = out.mutable_data();
+    {
+        py::gil_scoped_release release;
+        i64 j = 0;
+        for (i64 i = 0; i < n; ++i) {
+            bool any = false;
+            for (const i64 e = j + c[i]; j < e; ++j) any |= f[j];
+            r[i] = any;
+        }
+    }
+    return out;
+}
+
 PYBIND11_MODULE(_hep, m) {
     m.doc() = "akstream.hep event loops (C++)";
+    m.def("gather_rows", &gather_rows);
+    m.def("take_rows", &take_rows);
+    m.def("combine_rows", &combine_rows);
+    m.def("mask_rows", &mask_rows);
+    m.def("index_rows", &index_rows);
+    m.def("repeat", &repeat);
+    m.def("segment_any", &segment_any);
     m.def("segment_sum", &segment_sum<float>);
     m.def("segment_sum", &segment_sum<double>);
     m.def("segment_sum", &segment_sum<i64>);

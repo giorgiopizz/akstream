@@ -103,7 +103,7 @@ def _extra_fields(offsets, n, fields):
         x = ak.to_numpy(x) if isinstance(x, ak.Array) else np.asarray(x)
         if len(x) != n:
             raise ValueError(f"p4: the extra field {name!r} has {len(x)} rows, the 4-vector components {n}")
-        out[name] = x if offsets is None else jagged.wrap(offsets, np.repeat(x, counts))
+        out[name] = x if offsets is None else jagged.wrap(offsets, jagged.repeat(x, counts))
     return out
 
 
