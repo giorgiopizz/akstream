@@ -22,7 +22,7 @@ import numpy as _np
 from .engine import compute, last_failed, last_stats, varied
 from .expr import Collection, Expr, call, zip_record
 from .frame import Frame
-from .io import ArraysDataset, Dataset, Friend
+from .io import ArraysDataset, Dataset, Friend, ParquetDataset
 from .results import IntCategory, Regular, Variable
 from . import vector as _vector
 
@@ -31,7 +31,7 @@ try:
 except _metadata.PackageNotFoundError:  # a source tree that is not installed (python setup.py build_ext --inplace)
     __version__ = "unknown"
 
-__all__ = ["read_root", "from_arrays", "compute", "varied", "apply", "onnx", "checkpoint", "checked", "Frame", "Expr", "Collection",
+__all__ = ["read_root", "read_parquet", "from_arrays", "compute", "varied", "apply", "onnx", "checkpoint", "checked", "Frame", "Expr", "Collection",
            "Friend", "IntCategory", "Regular", "Variable", "last_stats", "last_failed", "zip", "p4", "collins_soper", "delta_r"]
 
 
@@ -61,6 +61,20 @@ def read_root(files, tree="Events", step=200_000, entry_start=0, entry_stop=None
     """
     ds = Dataset(files, tree, step, entry_start, entry_stop, threads, friends, rdf_compatible, remote_strategy, retries,
                  retry_delay)
+    return Frame(ds, ds.root)
+
+
+def read_parquet(files, step=200_000, entry_start=0, entry_stop=None, threads=0, rdf_compatible=False):
+    """a Frame over flat-ntuple parquet files (a path, a glob or a list): one row per entry, columns of numbers,
+    booleans or lists of them (NanoAOD-style nJet, Jet_pt, Jet_eta, ...: collections as in read_root). Other columns
+    (strings, nested records) are skipped with a warning. Needs pyarrow.
+
+    step     rows per chunk (chunks need not align with the files' row groups: a row group is decoded once)
+    entry_start, entry_stop  the row range, with a single file (as read_root)
+    threads  0: decode on this thread; otherwise pyarrow's thread pool
+    rdf_compatible  as read_root
+    Columns with None (parquet nulls) come as awkward option types; df.to_parquet writes this layout back."""
+    ds = ParquetDataset(files, step, entry_start, entry_stop, threads, rdf_compatible)
     return Frame(ds, ds.root)
 
 

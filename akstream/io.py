@@ -1,4 +1,4 @@
-"""Input: a set of ROOT files with one TTree, read in chunks with uproot.
+"""Input: ROOT files with one TTree, read in chunks with uproot (or flat-ntuple parquet files, with pyarrow).
 
 Per chunk, the branches the plan needs are read in two bulk calls per tree (flat branches as numpy, jagged ones as
 awkward). Anything touched lazily (a field of a materialised record) is read on demand and remembered, so that from the
@@ -521,5 +521,201 @@ class ArraysChunk(Chunk):
                 if source is None:
                     raise KeyError(f"no column {branch!r} in the arrays")
                 a = source[self.start:self.stop]
+            self.arrays[branch] = a
+        return a
+
+
+# ---------------------------------------------------------------- parquet files (aks.read_parquet)
+def _pyarrow():
+    try:
+        import pyarrow
+        import pyarrow.parquet
+    except ImportError as err:
+        raise ImportError("parquet files need pyarrow: pip install akstream[parquet] (or pip install pyarrow)") from err
+    return pyarrow
+
+
+def _parquet_column(t):
+    """(jagged, numpy dtype) of a flat-ntuple parquet type (a number, a boolean, or a list of them), else None."""
+    pa = _pyarrow()
+
+    def number(x):
+        if pa.types.is_boolean(x):
+            return np.dtype(bool)
+        if pa.types.is_integer(x) or pa.types.is_floating(x):
+            return np.dtype(x.to_pandas_dtype())
+        return None
+    if pa.types.is_list(t) or pa.types.is_large_list(t):
+        dt = number(t.value_type)
+        return None if dt is None else (True, dt)
+    dt = number(t)
+    return None if dt is None else (False, dt)
+
+
+class ParquetDataset(Dataset):
+    """flat-ntuple parquet files (one row per entry; columns of numbers, booleans, or lists of them, as NanoAOD's
+    nJet, Jet_pt, ...), read in chunks of `step` rows; only the columns the plan needs are read."""
+
+    def __init__(self, files, step=200_000, entry_start=0, entry_stop=None, threads=0, rdf_compatible=False):
+        import warnings
+        pq = _pyarrow().parquet
+        self.files = expand(files)
+        self.tree = None
+        self.rdf_compatible = rdf_compatible
+        self.remote_strategy, self.retries, self.retry_delay = 0, 0, 0.0
+        self._ranges, self.open_failures = {}, []
+        self.friends, self.friend_match, self.source_tree = {}, {}, {}
+        self.step = int(step)
+        self.entry_start, self.entry_stop = entry_start, entry_stop
+        self.threads = threads
+        self.cache, self.keep, self.booked = {}, [], []
+        self.root = Space(self)
+        self._open = None
+        self._entries = {}
+        schema = pq.read_schema(self.files[0])
+        self.branches, self.dtypes, skipped = {}, {}, []
+        for field in schema:
+            kind = _parquet_column(field.type)
+            if kind is None:
+                skipped.append(f"{field.name} ({field.type})")
+                continue
+            self.branches[field.name], self.dtypes[field.name] = kind
+        if skipped:
+            warnings.warn(f"akstream.read_parquet: {len(skipped)} columns are not flat-ntuple columns (numbers, booleans "
+                          f"or lists of them) and are not readable: {', '.join(skipped[:10])}", RuntimeWarning,
+                          stacklevel=3)
+        if ENTRY in self.branches:
+            raise ValueError(f"{self.files[0]}: a column is named {ENTRY}, the entry-number column of akstream")
+        self.branches[ENTRY] = False
+        self.dtypes[ENTRY] = np.dtype(np.int64)
+        self.collections, self.counters = self._collections()
+
+    def _num_entries(self, path):
+        n = self._entries[path] = _pyarrow().parquet.ParquetFile(path).metadata.num_rows
+        return n
+
+    def chunks(self):
+        for path in self.files:
+            if path not in self._entries:
+                self._num_entries(path)
+        return super().chunks()
+
+    def record(self, path, start, stop, err):
+        return {"file": path, "start": int(start), "stop": None if stop is None else int(stop), "error": error_text(err)}
+
+    def reader(self, prefetch):
+        return ParquetReader(self, prefetch)
+
+    def open_tree(self, path):
+        return None
+
+
+class ParquetReader:
+    """per-worker reader of parquet files: reads the needed columns of the row groups a chunk covers and keeps the
+    decoded row groups until the chunks have moved past them (chunks need not align with row groups). Safe for one
+    background read-ahead thread next to the main thread (one lock)."""
+
+    def __init__(self, dataset, prefetch):
+        self.dataset = dataset
+        self.prefetch = set(prefetch)
+        self.lazy_reads = set()
+        self._lock = threading.Lock()
+        self._files = {}  # path -> (ParquetFile, row-group first rows), the two most recent
+        self._groups = {}  # (path, row group) -> {column: pyarrow array}
+
+    def _file(self, path):
+        hit = self._files.get(path)
+        if hit is None:
+            pf = _pyarrow().parquet.ParquetFile(path)
+            sizes = [pf.metadata.row_group(i).num_rows for i in range(pf.metadata.num_row_groups)]
+            hit = self._files[path] = (pf, np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)]))
+            while len(self._files) > 2:
+                old = next(iter(self._files))
+                self._files.pop(old)
+                for key in [k for k in self._groups if k[0] == old]:
+                    del self._groups[key]
+        return hit
+
+    def columns(self, path, start, stop, names):
+        """{name: numpy or awkward} of the rows [start, stop) of `path`."""
+        pa = _pyarrow()
+        with self._lock:
+            pf, first = self._file(path)
+            schema = pf.schema_arrow
+            missing = [n for n in names if schema.get_field_index(n) < 0]
+            if missing:
+                raise KeyError(f"{path}: columns not in the file: {missing[:10]}")
+            lo, hi = max(int(np.searchsorted(first, start, "right")) - 1, 0), int(np.searchsorted(first, stop, "left"))
+            pieces = {n: [] for n in names}
+            for g in range(lo, hi):
+                cached = self._groups.setdefault((path, g), {})
+                todo = [n for n in names if n not in cached]
+                if todo:
+                    table = pf.read_row_group(g, columns=todo, use_threads=bool(self.dataset.threads))
+                    for n in todo:
+                        cached[n] = table.column(n).combine_chunks()
+                a, b = max(start, first[g]) - first[g], min(stop, first[g + 1]) - first[g]
+                for n in names:
+                    pieces[n].append(cached[n].slice(a, b - a))
+            for key in [k for k in self._groups if k[0] == path and first[k[1] + 1] <= start]:
+                del self._groups[key]  # row groups the chunks have moved past
+        out = {}
+        for n in names:
+            p = pieces[n]
+            arr = p[0] if len(p) == 1 else pa.concat_arrays(p)
+            out[n] = _from_arrow(arr, self.dataset.branches[n])
+        return out
+
+    def forget(self, path):
+        with self._lock:
+            self._files.pop(path, None)
+            for key in [k for k in self._groups if k[0] == path]:
+                del self._groups[key]
+
+    def add_branch(self, branch):
+        with self._lock:
+            self.lazy_reads.add(branch)
+            self.prefetch.add(branch)
+
+    def read(self, path, start, stop):
+        with self._lock:
+            wanted = sorted(self.prefetch)
+        out = self.columns(path, start, stop, [b for b in wanted if b != ENTRY])
+        if ENTRY in wanted:
+            out[ENTRY] = np.arange(start, stop, dtype=np.int64)
+        return ParquetChunk(self, path, start, stop, out)
+
+
+def _from_arrow(arr, jagged):
+    """numpy (a number column) or an awkward list array (a list column) of a pyarrow array; with None (nulls) the
+    awkward conversion, an option type."""
+    import awkward as ak
+    from .jagged import wrap
+    if not jagged:
+        if arr.null_count == 0:
+            return arr.to_numpy(zero_copy_only=False)
+        return ak.from_arrow(arr, generate_bitmasks=True)
+    offsets = np.asarray(arr.offsets, dtype=np.int64)
+    values = arr.values.slice(int(offsets[0]), int(offsets[-1] - offsets[0])) if len(offsets) else arr.values.slice(0, 0)
+    if arr.null_count == 0 and values.null_count == 0:
+        return wrap(offsets - offsets[0], values.to_numpy(zero_copy_only=False))
+    return ak.from_arrow(arr, generate_bitmasks=True)
+
+
+class ParquetChunk(Chunk):
+    def __init__(self, reader, path, start, stop, arrays):
+        super().__init__(reader, path, None, start, stop, arrays)
+
+    def get(self, branch):
+        a = self.arrays.get(branch)
+        if a is None:
+            ds = self.reader.dataset
+            if branch not in ds.branches:
+                raise KeyError(f"no column {branch!r} in the parquet files")
+            if branch == ENTRY:
+                a = np.arange(self.start, self.stop, dtype=np.int64)
+            else:
+                a = self.reader.columns(self.path, self.start, self.stop, [branch])[branch]
+                self.reader.add_branch(branch)
             self.arrays[branch] = a
         return a

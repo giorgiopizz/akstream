@@ -469,6 +469,15 @@ class Frame:
             columns = getattr(self, "_projection", None) or self.columns
         return res.ToRoot(self, path, columns, tree, basket_entries, compression)
 
+    def to_parquet(self, path, columns=None, row_group_entries=200_000, compression="zstd", counters=True):
+        """write columns to a flat-ntuple parquet file, as to_root: plain columns as they are, a collection as nX
+        (int32, counters=False: without) and its X_<field> list columns; ("X", [fields]) for some fields only. With
+        aks.varied(...), one file per variation ({variation} / {group} / {tag} in `path`). One row group per
+        `row_group_entries` rows; `compression` as pyarrow (zstd, snappy, gzip, lz4, None). Needs pyarrow."""
+        if columns is None:
+            columns = getattr(self, "_projection", None) or self.columns
+        return res.ToParquet(self, path, columns, row_group_entries, compression, counters)
+
     # ------------------------------------------------------------ conversions (computed now, every row in memory)
     def to_awkward(self, columns=None):
         """the rows of this frame as an awkward record array (a collection is a field of jagged records); computed now.
@@ -526,7 +535,8 @@ class Frame:
 
     def __repr__(self):
         where = "root" if self._space.is_root else f"selection {self._space.id}"
-        source = "in-memory arrays" if self._dataset.tree is None else f"{len(self._dataset.files)} files"
+        from .io import ArraysDataset
+        source = "in-memory arrays" if isinstance(self._dataset, ArraysDataset) else f"{len(self._dataset.files)} files"
         return f"Frame({source}, {where}, columns={self.columns})"
 
 

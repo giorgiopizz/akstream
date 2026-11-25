@@ -85,6 +85,13 @@ before it is processed, so a failure never leaves a chunk half-filled (the excep
 middle of a chunk, which is read in bulk from the second chunk on, raises); a skipped chunk of data is missing
 luminosity, so check `aks.last_failed` before using the result.
 
+**Parquet files**: `aks.read_parquet(files, step=200_000, entry_start=0, entry_stop=None, threads=0,
+rdf_compatible=False)` reads flat ntuples: one row per entry, columns of numbers, booleans or lists of them (NanoAOD
+style `nJet`, `Jet_pt`, `Jet_eta`, ...: collections as in `read_root`). Only the columns the results need are read;
+chunks need not align with the row groups (a row group is decoded once); parquet nulls come as option types (None).
+Other columns (strings, nested records or lists) are skipped with a warning. Friends and `remote_strategy` are
+ROOT-only. Needs pyarrow (`pip install akstream[parquet]`).
+
 **Arrays in memory**: `aks.from_arrays(data, step=200_000, rdf_compatible=False)` is a frame over a dict
 `{name: array}` (numpy, or awkward for lists), an awkward record array, or a pandas DataFrame, one entry per row.
 Record fields become `name_field` columns, so a table from `df.to_awkward(["mll", "Jet"])` comes back with its `Jet`
@@ -237,6 +244,7 @@ Evaluation: per chunk, each variation is recomputed only on the rows where it ch
 | `df.report(weight=)` | cutflow `[(filter name, entries, efficiency vs previous, cumulative efficiency)]`; `print(report)` shows a table |
 | `df.collect(columns)` | an awkward record array (or `df[["a", "b"]].collect()`) |
 | `df.to_root(path, columns, tree="Events", compression=)` | writes a TTree with uproot; value `{"files": [...], "entries": n}`. Collections are written as `nX` + `X_<field>`; `("Jet", ["pt", "eta"])` writes a collection with only those fields |
+| `df.to_parquet(path, columns, row_group_entries=200_000, compression="zstd", counters=True)` | the same rows and columns as `to_root`, written with pyarrow as a flat parquet file: plain columns as they are, a collection as `nX` (int32; `counters=False`: none) + `X_<field>` lists, one row group per `row_group_entries` rows; `aks.varied` as for `to_root` |
 | `aks.varied(df.to_root("out/{tag}/f.root", cols))` | one file per variation in the same pass: `{variation}`, `{group}` and `{tag}` in the path (`"jet:jes_up"` -> group `jet`, tag `jes_up`; nominal = `"nominal"`) |
 
 ### Conversions

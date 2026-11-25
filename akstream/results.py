@@ -849,6 +849,8 @@ class ToRoot(Result):
         return {"writers": {}, "part": None, "chunk": None, "corr": {}}
 
     # ------------------------------------------------------------ writers (one per variation)
+    SUFFIX = ".root"
+
     def _file_path(self, variation, part):
         path = self.path
         if self.variations is not None:
@@ -856,7 +858,7 @@ class ToRoot(Result):
                 raise ValueError(f"a varied to_root path needs {{variation}} (or {{group}} / {{tag}}): {path}")
             group, _, tag = variation.partition(":")
             path = path.format(variation=variation, group=group, tag=tag or group)
-        return path if part is None else path.replace(".root", f"_part{part}.root")
+        return path if part is None else path.replace(self.SUFFIX, f"_part{part}{self.SUFFIX}")
 
     def _writer(self, state, variation):
         w = state["writers"].get(variation)
@@ -966,3 +968,80 @@ class ToRoot(Result):
     def finalize(self, state):
         out = {v: {"files": o["path"], "entries": o["entries"]} for v, o in state["outputs"].items()}
         return out if self.variations is not None else out["nominal"]
+
+
+class ToParquet(ToRoot):
+    """write columns to a flat-ntuple parquet file with pyarrow, as ToRoot (the same rows per variation): plain columns
+    as they are, a collection as nX (int32; counters=False: none) + X_<field> list columns. One row group per
+    `row_group_entries` rows."""
+
+    SUFFIX = ".parquet"
+
+    def __init__(self, frame, path, columns, row_group_entries=200_000, compression="zstd", counters=True):
+        from .io import _pyarrow
+        _pyarrow()
+        super().__init__(frame, path, columns, None, row_group_entries, compression)
+        self.counters = counters
+        names = [c if f is None else f"{c}_{f}" for c, f in self.names]
+        if counters:
+            names += [f"n{c}" for c in dict.fromkeys(c for c, f in self.names if f is not None)]
+        dup = sorted({n for n in names if names.count(n) > 1})
+        if dup:
+            raise ValueError(f"to_parquet: columns written twice {dup} (a collection's counter nX and fields X_f come "
+                             f"with it: drop the explicit column, or counters=False)")
+
+    def _table(self, parts):
+        import awkward as ak
+        from .io import _pyarrow
+        pa = _pyarrow()
+        names, arrays, counters = [], [], {}
+        for i, (col, field) in enumerate(self.names):
+            vals = [p[i] for p in parts]
+            v = np.concatenate(vals) if all(isinstance(x, np.ndarray) for x in vals) else ak.concatenate(vals)
+            arr, counts = _to_arrow(pa, v)
+            if field is not None and self.counters and col not in counters:
+                counters[col] = len(names)
+                names.append(f"n{col}")
+                arrays.append(pa.array(np.zeros(len(v), np.int32) if counts is None else counts.astype(np.int32)))
+            names.append(col if field is None else f"{col}_{field}")
+            arrays.append(arr)
+        return pa.Table.from_arrays(arrays, names=names)
+
+    def _flush(self, state, variation):
+        w = self._writer(state, variation)
+        if not w["buffer"]:
+            return
+        table = self._table(w["buffer"])
+        if w["file"] is None:
+            path = self._file_path(variation, state["part"])
+            w["file"] = _pyarrow_writer(path, table.schema, self.compression)
+            w["path"] = path
+        elif table.schema != w["file"].schema:
+            table = table.cast(w["file"].schema)
+        if w["buffered"]:
+            w["file"].write_table(table)
+        w["entries"] += w["buffered"]
+        w["buffer"], w["buffered"] = [], 0
+
+
+def _pyarrow_writer(path, schema, compression):
+    from .io import _pyarrow
+    return _pyarrow().parquet.ParquetWriter(path, schema, compression=compression or "none")
+
+
+def _to_arrow(pa, v):
+    """(pyarrow array, counts per row or None) of a column: numpy as is, lists of numbers as a 32-bit list array
+    (64-bit offsets past 2^31 elements), anything else (option types) through awkward."""
+    import awkward as ak
+    from . import jagged
+    if isinstance(v, np.ndarray):
+        return pa.array(v), None
+    s = jagged.simple(v)
+    if s is not None:
+        offsets, data = s
+        kind = pa.ListArray if offsets[-1] < 2 ** 31 else pa.LargeListArray
+        dtype = np.int32 if kind is pa.ListArray else np.int64
+        return kind.from_arrays(pa.array(offsets.astype(dtype)), pa.array(data)), np.diff(offsets)
+    arr = ak.to_arrow(v, extensionarray=False, list_to32=True)
+    counts = np.asarray(ak.fill_none(ak.num(v, axis=1), 0)) if v.ndim > 1 else None
+    return arr, counts

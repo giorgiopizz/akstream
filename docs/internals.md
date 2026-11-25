@@ -20,8 +20,8 @@ About 5,600 lines: 13 Python modules and one C++ file. Reading order for someone
 | `rows.py` | 312 | row-id set operations and row-wise take / concat / combine / compare for numpy, awkward and dict values |
 | `jagged.py` | 218 | fast paths for the `var * number` layout: elementwise ops, masks, integer indices, row gathers, on the flat numpy contents (the gathers in C++) |
 | **I/O and results** | | |
-| `io.py` | 420 | `Dataset` (files, schema, collections, friends), chunked reading with uproot (bulk + lazy branches, read-ahead), friend alignment checks; `ArraysDataset` (`aks.from_arrays`): the same interface over arrays in memory |
-| `results.py` | 837 | histograms (own binning + boost-histogram fills), sums, group sums, cutflow, collect, `to_root` (one file per variation) |
+| `io.py` | 721 | `Dataset` (files, schema, collections, friends), chunked reading with uproot (bulk + lazy branches, read-ahead), friend alignment checks; `ArraysDataset` (`aks.from_arrays`): the same interface over arrays in memory; `ParquetDataset` (`aks.read_parquet`): flat-ntuple parquet files with pyarrow (row groups decoded once) |
+| `results.py` | 1047 | histograms (own binning + boost-histogram fills), sums, group sums, cutflow, collect, `to_root` / `to_parquet` (one file per variation) |
 | **physics kernels** | | |
 | `hep.py` | 256 | `akstream.hep`: jagged kernels (`nth`, `pick`, `count`, `per_event_sum`, `isolated`, `between`, `select_sort`, `max_mass_pair`, ...), lazy-aware |
 | `vector.py` | 263 | `akstream.vector`: `P4` (lazy mass / pt / eta / phi), `RootP4` (ROOT GenVector arithmetic), `add`, `collins_soper`, `delta_phi`, `delta_r` |
@@ -75,7 +75,7 @@ functions, which a loop does not avoid.
 
 ## Tests
 
-`tests/` (235 tests, synthetic NanoAOD-like trees written in `conftest.py`): each feature against plain awkward /
+`tests/` (242 tests, synthetic NanoAOD-like trees written in `conftest.py`): each feature against plain awkward /
 numpy on the same data; variations against brute-force recomputation; the ROOT-compatibility tests against ROOT
 itself when it is importable (skipped otherwise). `test_collections.py` covers the collection API, `test_api.py` the
 chain API, `test_vector.py` 4-vectors and RDataFrame compatibility, `test_jagged.py` the fast paths, `test_conversions.py`
