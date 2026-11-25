@@ -87,6 +87,9 @@ class Plan:
             by_trigger = len(compared) < len(self.varied_results[v])
             self.fused[v] = fused.plan_variation(v, self.affected[v], self.subst[v], order, children, result_nodes,
                                                  by_trigger)
+        for r in self.results:  # written results: their file layout (which variation changes what)
+            if hasattr(r, "plan_layout"):
+                r.plan_layout(self)
         # variations that replace the same branches (and fill the same results) run their phase 2 stacked together
         self.batches, by_key = [], {}
         for v in self.variations:

@@ -14,7 +14,7 @@ records {"file", "start", "stop", "error", "tree", "friends", "match"} (stop Non
 opened); a list of them is a valid `files` argument: read_root(failed) processes exactly those chunks.
 
 Collections: the jagged branches X_<field> of a common prefix X (NanoAOD's Jet_pt, Jet_eta, ...), with the counter nX
-when the tree has one.
+when the tree has one; X_<field>__<v> (a file written with every variation) form the collection X__<v>.
 """
 import glob
 import os
@@ -153,7 +153,12 @@ class Dataset:
         for name, jagged in self.branches.items():
             if not jagged or "_" not in name:
                 continue
-            prefix, field = name.split("_", 1)
+            base, sep, variation = name.partition("__")  # X_<field>__<v>: the collection X__<v> of a varied file
+            if "_" not in base:
+                continue
+            prefix, field = base.split("_", 1)
+            if sep and variation:
+                prefix = f"{prefix}__{variation}"
             if prefix and field and prefix not in self.branches:
                 out.setdefault(prefix, []).append(field)
         counters = {c: (f"n{c}" if f"n{c}" in self.branches and not self.branches[f"n{c}"] else None) for c in out}

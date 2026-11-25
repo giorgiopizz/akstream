@@ -688,3 +688,50 @@ def _grouped_fill(hists, accs, side, rows_of, values_at, sign, cache):
             acc.sumw -= sumw[part]
             acc.sumw2 -= sumw2[part]
             acc.count -= count[part]
+
+
+class _AllKnown:
+    def __contains__(self, item):
+        return True
+
+
+class NominalOnRows(ChunkContext):
+    """nominal values on given root rows as if every selection kept them: the rows a variation adds to a written
+    selection, whose nominal values no nominal pass computes (one file for every variation: the nominal columns are
+    the nominal values on every written row). Root-space values come from the chunk's nominal pass when it still holds
+    them."""
+
+    def __init__(self, base, rows):
+        super().__init__(base.chunk)
+        self.base, self.rows = base, np.asarray(rows, np.int64)
+        self.m = len(self.rows)
+
+    def local_index(self, space):
+        return np.arange(self.m)
+
+    def index(self, space):
+        return self.rows
+
+    def size(self, space):
+        return self.m
+
+    def positions(self, space, ids):
+        return np.searchsorted(self.rows, ids)
+
+    def _deps(self, node):
+        if isinstance(node, Take):
+            return [node.parent]
+        if node.space.is_root and node.id in self.base.values:
+            return []
+        return _deps(node, _AllKnown())
+
+    def _compute(self, node):
+        if node.space.is_root:
+            v = self.base.values.get(node.id, _MISSING)
+            if v is not _MISSING:
+                return R.take(v, self.rows)
+        if isinstance(node, Source):
+            return R.take(self.chunk.get(node.branch), self.rows)
+        if isinstance(node, Take):
+            return self.value(node.parent)
+        return super()._compute(node)

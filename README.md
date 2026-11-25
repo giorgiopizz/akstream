@@ -82,6 +82,7 @@ df.hist("mjj", (40, 0, 4000))
 | `df.sum(col, weight)`, `df.count()`, `df.groupby(key).sum(col) / .count()` | `df.count()` = the number of rows; a sum of weights is `df.sum("weight")` |
 | `df.collect(cols)`, `df.head(n)`, `df.peek(expr)`, `df.to_root(path, cols)` | awkward arrays / a TTree written with uproot (collections as `nX` + `X_f`) |
 | `df.to_parquet(path, cols, row_group_entries, compression="zstd", counters=True)` | the same rows and columns as `to_root`, as a flat parquet file (collections as `nX` + `X_f` lists; `aks.varied` too) |
+| `aks.varied(df.to_root("out.root", cols))` | one file for every variation (as RDataFrame's Snapshot with `fIncludeVariations`): the rows selected in the nominal or in any variation; `col` = nominal value on every row, `col__jes_up` only where that variation changes `col`, `passed` and `passed__jes_up` (only variations that can move the selection) |
 | `aks.varied(df.to_root("out/{tag}/f.root", cols))` | one file per variation in the same pass (`{variation}`, `{group}`, `{tag}`; nominal = "nominal"): per chunk the nominal rows with the rows a variation changes replaced by their recomputation |
 | `df.vary(col, up=alt, down=alt, name=)`, `df.vary([col, ...], up=[alt, ...], down=[...], name=)` | variations `name:up`, `name:down` (col = a column, or `("Jet", "pt")`; a list = columns varied together; alternative = branch, expression string, or lazy column; name defaults to the column for one column); a varied branch varies wherever it is read, a varied defined column from there on |
 | `aks.varied(result)` | its value becomes `{"nominal": ..., "<variation>": ...}` (every variation that affects it) |
@@ -170,7 +171,7 @@ differently) so its floating point matches numpy exactly.
 ## Tests
 
     pip install -e .[test,onnx]
-    pytest                                   # 242 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
+    pytest                                   # 246 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
 
 The tests that compare with ROOT itself (GenVector arithmetic) run when PyROOT is importable and are skipped otherwise.
 

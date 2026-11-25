@@ -152,3 +152,100 @@ def test_varied_to_root_one_file_per_variation(events_file, tmp_path):
         assert ak.all(got["jets"] == ref["jets"]), v
         np.testing.assert_array_equal(hist[v].values(), np.histogram(np.asarray(ref["ht"]), 20, (0, 600))[0])
     assert (tmp_path / "out_nominal_nominal.root").exists() and (tmp_path / "out_jer4_up.root").exists()
+
+
+def _one_file_build(df):
+    df["w"] = df.genWeight * 2
+    df["ht"] = aks.sum(df.Jet.pt[df.Jet.pt > 30], axis=1)
+    df["lead"] = aks.fill_none(aks.max(df.Jet.pt, axis=1), -1.0)
+    sel = df.filter("ht > 60 && mll > 80")
+    sel["jets"] = sel.Jet[sel.Jet.pt > 30][["pt", "eta"]]
+    return sel
+
+
+ONE_FILE_COLS = ["ht", "lead", "jets", "event", "mll", "w"]
+ONE_FILE_VARIATIONS = (("jer4:up", "Jet_pt_jer4_up"), ("jer4:down", "Jet_pt_jer4_down"), ("jes:up", "Jet_pt_jes_up"))
+
+
+def _one_file_frame(events_file):
+    df = aks.read_root(events_file, step=3_000)
+    df.vary("Jet_pt", up="Jet_pt_jer4_up", down="Jet_pt_jer4_down", name="jer4")
+    df.vary("Jet_pt", up="Jet_pt_jes_up", name="jes")
+    df.vary("genWeight", up=df.genWeight * 1.1, name="wsys")  # cannot change the selection
+    return _one_file_build(df)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_varied_to_root_one_file(events_file, tmp_path, workers):
+    """aks.varied(to_root(plain path)): one file, the rows selected in the nominal or in any variation; nominal values
+    on every row, col__<v> where v changes col, passed / passed__<v> for the variations that can move the selection."""
+    info = aks.compute(aks.varied(_one_file_frame(events_file).to_root(str(tmp_path / "all.root"), ONE_FILE_COLS)),
+                       workers=workers)[0]
+    files = info["files"]
+    got = ak.concatenate([uproot.open(f)["Events"].arrays(library="ak") for f in files])
+    assert info["entries"] == len(got)
+    keys = set(uproot.open(files[0])["Events"].keys())
+    varied = {f"{c}__{v}" for c in ("ht", "lead", "njets", "jets_pt", "jets_eta") for v in ("jer4_up", "jer4_down", "jes_up")}
+    assert keys == {"ht", "lead", "njets", "jets_pt", "jets_eta", "event", "mll", "w", "w__wsys_up", "passed",
+                    "passed__jer4_up", "passed__jer4_down", "passed__jes_up"} | varied
+    # the reference: each variation as a nominal-only run with its branch swapped in
+    refs = {}
+    for v, branch in (("nominal", "Jet_pt"),) + ONE_FILE_VARIATIONS:
+        ref_df = aks.read_root(events_file, step=3_000)
+        ref_df["Jet_pt"] = ref_df[branch]
+        refs[v] = _one_file_build(ref_df).collect(["ht", "lead", "jets", "event", "w"]).value
+    events = np.asarray(got["event"])
+    union = np.unique(np.concatenate([np.asarray(r["event"]) for r in refs.values()]))
+    np.testing.assert_array_equal(events, union)
+    np.testing.assert_array_equal(np.asarray(got["passed"]), np.isin(events, np.asarray(refs["nominal"]["event"])))
+    for v, _ in ONE_FILE_VARIATIONS:
+        s = v.replace(":", "_")
+        ref = refs[v]
+        on = np.asarray(got[f"passed__{s}"])
+        np.testing.assert_array_equal(on, np.isin(events, np.asarray(ref["event"])))
+        for c in ("ht", "lead"):
+            np.testing.assert_array_equal(np.asarray(got[f"{c}__{s}"])[on], np.asarray(ref[c]), err_msg=f"{v} {c}")
+            assert not np.asarray(got[f"{c}__{s}"])[~on].any()
+        assert ak.all(got[f"jets_pt__{s}"][on] == ref["jets"].pt) and ak.all(got[f"jets_eta__{s}"][on] == ref["jets"].eta)
+        assert not ak.any(got[f"njets__{s}"][~on])
+    # nominal columns: the nominal formulas on every written row, also where only a variation selects it
+    raw = uproot.open(events_file)["Events"].arrays(library="ak")[events]
+    jets = raw.Jet_pt > 30
+    np.testing.assert_array_equal(np.asarray(got["ht"]), np.asarray(ak.sum(raw.Jet_pt[jets], axis=1)))
+    np.testing.assert_array_equal(np.asarray(got["lead"]), np.asarray(ak.fill_none(ak.max(raw.Jet_pt, axis=1), -1.0)))
+    assert ak.all(got["jets_pt"] == raw.Jet_pt[jets]) and ak.all(got["jets_eta"] == raw.Jet_eta[jets])
+    np.testing.assert_array_equal(np.asarray(got["w"]), np.asarray(raw.genWeight * 2))
+    on = np.asarray(got["passed"])  # a variation that cannot move the selection: valid where the nominal passes
+    np.testing.assert_array_equal(np.asarray(got["w__wsys_up"])[on], np.asarray(raw.genWeight * 1.1 * 2)[on])
+    # read back: the varied collections are collections of their own
+    back = aks.read_root(files[0])
+    assert set(back.jets.fields) == {"pt", "eta"} and set(back["jets__jes_up"].fields) == {"pt", "eta"}
+
+
+def test_varied_to_parquet_one_file_equals_root(events_file, tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    sel = _one_file_frame(events_file)
+    r, p = aks.compute(aks.varied(sel.to_root(str(tmp_path / "all.root"), ONE_FILE_COLS)),
+                       aks.varied(sel.to_parquet(str(tmp_path / "all.parquet"), ONE_FILE_COLS)))
+    t = pq.read_table(p["files"][0])
+    u = uproot.open(r["files"][0])["Events"].arrays(library="ak")
+    assert set(t.column_names) == set(u.fields) and r["entries"] == p["entries"] == t.num_rows
+    for c in t.column_names:
+        assert t.column(c).to_pylist() == u[c].tolist(), c
+
+
+def test_varied_one_file_nominal_not_computable(events_file, tmp_path):
+    """a nominal column that fails on a row only a variation selects (the second jet of a one-jet event): 0 there,
+    with a warning, and passed False."""
+    df = aks.read_root(events_file, step=5_000)
+    df.vary("Jet_pt", up="Jet_pt_jes_up", name="jes")
+    hard = df.Jet[df.Jet.pt > 40]
+    df["n40"] = aks.num(hard, axis=1)
+    sel = df[df.n40 >= 2]
+    sel["pt2"] = sel.Jet[sel.Jet.pt > 40].pt[:, 1]
+    with pytest.warns(RuntimeWarning, match="cannot be computed"):
+        info = aks.compute(aks.varied(sel.to_root(str(tmp_path / "f.root"), ["pt2", "event"])))[0]
+    got = uproot.open(info["files"][0])["Events"].arrays(library="ak")
+    only = ~np.asarray(got["passed"])
+    assert only.any() and not np.asarray(got["pt2"])[only].any()
+    assert np.asarray(got["passed__jes_up"])[only].all() and (np.asarray(got["pt2__jes_up"])[only] > 40).all()

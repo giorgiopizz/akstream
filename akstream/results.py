@@ -816,10 +816,18 @@ class ToRoot(Result):
     """write columns to a ROOT TTree with uproot (collections as nX + X_field branches; ("X", [fields]) writes a
     collection with only those fields).
 
-    With aks.varied(...), one file per variation in the same pass: `path` must contain {variation} (or {group} /
-    {tag}: "jet:jes_up" -> group "jet", tag "jes_up"; the nominal is "nominal" for all three). A variation's file holds
-    the rows of its selection with its values, in entry order: per chunk, the nominal rows with the rows the variation
-    changes replaced by their recomputation (fused engine)."""
+    With aks.varied(...) and a plain path: one file for every variation, as RDataFrame's Snapshot with
+    fIncludeVariations. Its rows are those of the selection in the nominal or in at least one variation, in entry order:
+        col              the nominal value on every row (also where only a variation selects the row)
+        col__<v>         where variation v can change col ("jes:up" -> col__jes_up; a collection X: nX__jes_up and
+                         X_<field>__jes_up), its value where v selects the row, 0 / an empty list elsewhere
+        passed           the nominal selection keeps the row
+        passed__<v>      only for the variations that can change the selection: v keeps the row
+    With {variation} (or {group} / {tag}: "jet:jes_up" -> group "jet", tag "jes_up"; the nominal is "nominal" for all
+    three) in `path`: one file per variation, holding the rows of its selection with its values. Either way, per chunk:
+    the nominal rows with the rows a variation changes replaced by their recomputation (fused engine)."""
+
+    merged = False  # one file for every variation (set by plan_layout)
 
     def __init__(self, frame, path, columns, tree="Events", basket_entries=200_000, compression=None):
         super().__init__(frame)
@@ -841,9 +849,31 @@ class ToRoot(Result):
             else:
                 self.names.append((c, None))
                 self.columns.append(frame._column_node(c))
+        self.out_names = list(self.names)
 
     def nodes(self):
         return self.columns
+
+    def plan_layout(self, plan):
+        """with every variation in one file: the varied columns of each variation, the variations that can change the
+        selection (they get a passed__<v> flag), and the written names."""
+        self.merged = self.variations is not None and not any(k in self.path for k in ("{variation}", "{group}", "{tag}"))
+        if not self.merged:
+            return
+        self.selection_variations = [v for v in self.variation_names if self.space.id in plan.fused[v].space_affected]
+        self.varied_columns = {v: [i for i, n in enumerate(self.columns) if n.id in plan.fused[v].value_affected]
+                               for v in self.variation_names}
+        out = list(self.names)
+        for v in self.variation_names:
+            suffix = "__" + v.replace(":", "_")
+            out += [(self.names[i][0] + suffix, self.names[i][1]) for i in self.varied_columns[v]]
+        out.append(("passed", None))
+        out += [("passed__" + v.replace(":", "_"), None) for v in self.selection_variations]
+        names = [_flat_name(c, f) for c, f in out]
+        dup = sorted({n for n in names if names.count(n) > 1})
+        if dup:
+            raise ValueError(f"varied {type(self).__name__}: names written twice {dup}")
+        self.out_names = out
 
     def init_state(self):
         return {"writers": {}, "part": None, "chunk": None, "corr": {}}
@@ -853,7 +883,7 @@ class ToRoot(Result):
 
     def _file_path(self, variation, part):
         path = self.path
-        if self.variations is not None:
+        if self.variations is not None and not self.merged:
             if not any(k in path for k in ("{variation}", "{group}", "{tag}")):
                 raise ValueError(f"a varied to_root path needs {{variation}} (or {{group}} / {{tag}}): {path}")
             group, _, tag = variation.partition(":")
@@ -878,11 +908,14 @@ class ToRoot(Result):
     def fill(self, state, ctx):
         values = [ctx.value(n) for n in self.columns]
         n = ctx.size(self.space)
-        self._append(state, "nominal", values, n)
+        if not self.merged:
+            self._append(state, "nominal", values, n)
         if self.variations is not None:
             ids = ctx.index(self.space)
             state["chunk"] = (np.arange(ctx.n) if ids is None else ids, values)
             state["corr"] = {}
+            if self.merged:
+                state["ctx"] = ctx  # the nominal values of the rows only a variation selects are computed at the end
 
     def fill_variation(self, state, vctx):
         raise NotImplementedError("a varied to_root needs the fused engine (compute(exact=False, engine='fused'))")
@@ -893,30 +926,72 @@ class ToRoot(Result):
         `changed` root ids (replace_all: every row was recomputed)."""
         state["corr"][variation] = (changed, ids, values, replace_all)
 
+    def _varied_rows(self, state, v):
+        """(root ids, values) of the rows of variation v's selection in this chunk."""
+        ids, nominal = state["chunk"]
+        hit = state["corr"].get(v)
+        if hit is None:  # nothing changes in this chunk
+            return ids, nominal
+        changed, new_ids, new_values, replace_all = hit
+        if replace_all:
+            return new_ids, new_values
+        keep = np.flatnonzero(~R.member(ids, changed))
+        all_ids = np.concatenate([ids[keep], new_ids])
+        order = np.argsort(all_ids, kind="stable")
+        from_new = order >= len(keep)
+        return all_ids[order], [R.combine(R.take(a, keep), b, from_new) for a, b in zip(nominal, new_values)]
+
     def end_chunk(self, state):
         if self.variations is None or state["chunk"] is None:
             return
-        ids, nominal = state["chunk"]
-        for v in self.variation_names:
-            hit = state["corr"].get(v)
-            if hit is None:  # nothing changes in this chunk
-                self._append(state, v, nominal, len(ids))
-                continue
-            changed, new_ids, new_values, replace_all = hit
-            if replace_all:
-                self._append(state, v, new_values, len(new_ids))
-                continue
-            keep = np.flatnonzero(~R.member(ids, changed))
-            order = np.argsort(np.concatenate([ids[keep], new_ids]), kind="stable")
-            from_new = order >= len(keep)
-            values = [R.combine(R.take(a, keep), b, from_new) for a, b in zip(nominal, new_values)]
-            self._append(state, v, values, len(order))
+        if self.merged:
+            self._end_chunk_merged(state)
+        else:
+            for v in self.variation_names:
+                ids, values = self._varied_rows(state, v)
+                self._append(state, v, values, len(ids))
         state["chunk"], state["corr"] = None, {}
+        state.pop("ctx", None)
+
+    def _end_chunk_merged(self, state):
+        from .fused import NominalOnRows
+        ids, nominal = state["chunk"]
+        varied = {v: self._varied_rows(state, v) for v in self.variation_names}
+        rows = R.union(ids, *[varied[v][0] for v in self.selection_variations])
+        base = nominal
+        if len(rows) > len(ids):  # rows only a variation selects: their nominal values
+            extra = rows[~R.member(rows, ids)]
+            sub = NominalOnRows(state["ctx"], extra)
+            values = []
+            for i, n in enumerate(self.columns):
+                try:
+                    values.append(sub.value(n))
+                except Exception as err:  # noqa: BLE001 (e.g. jets[:, 1] where the nominal has one jet)
+                    values.append(_default_rows(nominal[i], len(extra)))
+                    if not state.setdefault("warned", set()) & {i}:
+                        state["warned"].add(i)
+                        import warnings
+                        name = _flat_name(*self.names[i])
+                        warnings.warn(f"varied {type(self).__name__}: the nominal value of {name} cannot be computed on "
+                                      f"the rows only a variation selects ({type(err).__name__}: {err}): written as "
+                                      f"0 / empty there (passed is False on those rows)", RuntimeWarning, stacklevel=2)
+            from_extra = R.member(rows, extra)
+            base = [R.combine(a, b, from_extra) for a, b in zip(nominal, values)]
+        out = list(base)
+        for v in self.variation_names:
+            vids, vvals = varied[v]
+            present = R.member(rows, vids) if len(vids) != len(rows) else None
+            for i in self.varied_columns[v]:
+                x = vvals[i]
+                out.append(x if present is None else R.combine(_default_rows(x, int((~present).sum())), x, present))
+        out.append(R.member(rows, ids))
+        out += [R.member(rows, varied[v][0]) for v in self.selection_variations]
+        self._append(state, "merged", out, len(rows))
 
     # ------------------------------------------------------------ output
     def _branches(self, parts):
         groups = {}
-        for (col, field), i in zip(self.names, range(len(self.names))):
+        for (col, field), i in zip(self.out_names, range(len(self.out_names))):
             vals = [p[i] for p in parts]
             v = np.concatenate(vals) if all(isinstance(x, np.ndarray) for x in vals) else ak.concatenate(vals)
             if field is None:
@@ -937,14 +1012,15 @@ class ToRoot(Result):
             w["file"] = uproot.recreate(path, **kw)
             w["path"] = path
             types = {k: (v.type.content if isinstance(v, ak.Array) else v.dtype) for k, v in data.items()}
-            w["tree"] = w["file"].mktree(self.tree, types)
+            w["tree"] = w["file"].mktree(self.tree, types, field_name=_field_name)
         if w["buffered"]:
             w["tree"].extend(data)
         w["entries"] += w["buffered"]
         w["buffer"], w["buffered"] = [], 0
 
     def end_task(self, state):
-        names = ["nominal"] + list(getattr(self, "variation_names", []) if self.variations is not None else [])
+        names = ["merged"] if self.merged else \
+            ["nominal"] + list(getattr(self, "variation_names", []) if self.variations is not None else [])
         for v in names:
             self._flush(state, v)  # zero-row chunks are buffered too: an empty selection still writes its typed tree
             w = state["writers"].get(v)
@@ -967,7 +1043,34 @@ class ToRoot(Result):
 
     def finalize(self, state):
         out = {v: {"files": o["path"], "entries": o["entries"]} for v, o in state["outputs"].items()}
+        if self.merged:
+            return out.get("merged", {"files": [], "entries": 0})
         return out if self.variations is not None else out["nominal"]
+
+
+def _field_name(outer, inner):
+    """the branch of field `inner` of the collection `outer`: X_<inner>, and X_<inner>__<v> for a varied collection
+    X__<v> (its counter is nX__<v>)."""
+    if outer == "":
+        return inner
+    base, sep, variation = outer.partition("__")
+    return f"{base}_{inner}__{variation}" if sep else f"{outer}_{inner}"
+
+
+def _flat_name(col, field):
+    return col if field is None else _field_name(col, field)
+
+
+def _default_rows(like, k):
+    """k rows of 0 (numbers) or empty lists (lists of numbers) of the type of `like`: a varied column where its
+    variation does not select the row (as RDataFrame's default-constructed values)."""
+    from . import jagged
+    if isinstance(like, np.ndarray):
+        return np.zeros((k,) + like.shape[1:], like.dtype)
+    s = jagged.simple(like)
+    if s is not None:
+        return jagged.wrap(np.zeros(k + 1, np.int64), s[1][:0])
+    return ak.Array([None] * k)
 
 
 class ToParquet(ToRoot):
@@ -995,7 +1098,7 @@ class ToParquet(ToRoot):
         from .io import _pyarrow
         pa = _pyarrow()
         names, arrays, counters = [], [], {}
-        for i, (col, field) in enumerate(self.names):
+        for i, (col, field) in enumerate(self.out_names):
             vals = [p[i] for p in parts]
             v = np.concatenate(vals) if all(isinstance(x, np.ndarray) for x in vals) else ak.concatenate(vals)
             arr, counts = _to_arrow(pa, v)
@@ -1003,7 +1106,7 @@ class ToParquet(ToRoot):
                 counters[col] = len(names)
                 names.append(f"n{col}")
                 arrays.append(pa.array(np.zeros(len(v), np.int32) if counts is None else counts.astype(np.int32)))
-            names.append(col if field is None else f"{col}_{field}")
+            names.append(_flat_name(col, field))
             arrays.append(arr)
         return pa.Table.from_arrays(arrays, names=names)
 
