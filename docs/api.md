@@ -94,7 +94,8 @@ luminosity, so check `aks.last_failed` before using the result.
 Every file is opened with `timeout=30` seconds (`read_root(timeout=...)`, `read_samples(timeout=...)`), so that a
 server that stops answering raises, and `remote_strategy` applies, instead of hanging: without one, an XRootD request
 waits for the client's own limit, 30 minutes. The limit is per request (an open, a stat, one vector read), not per
-chunk: over a slow link with large chunks a single vector read can take longer, so raise it there. A timed-out read
+chunk (whole seconds, rounded up: the XRootD client takes an int): over a slow link with large chunks a single vector
+read can take longer, so raise it there. A timed-out read
 carries the hint in its error (and in the records). `timeout=None` gives uproot's default.
 
 ### Replicas

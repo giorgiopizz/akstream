@@ -25,6 +25,7 @@ Collections: the jagged branches X_<field> of a common prefix X (NanoAOD's Jet_p
 when the tree has one; X_<field>__<v> (a file written with every variation) form the collection X__<v>.
 """
 import glob
+import math
 import os
 import re
 import threading
@@ -196,7 +197,7 @@ class Dataset:
     def _open_kwargs(self):
         kw = dict(self.uproot_options)
         if self.timeout is not None:  # None: uproot's own default (no key: older uproot hands it to fsspec as is)
-            kw["timeout"] = self.timeout
+            kw["timeout"] = max(1, math.ceil(self.timeout))  # whole seconds: the XRootD client takes an int only
         return kw
 
     def note_timeout(self, err):

@@ -61,9 +61,10 @@ def read_root(files, tree="Events", step=200_000, entry_start=0, entry_stop=None
              the results). The results of a run with skipped chunks are those of the other chunks; with "retry", the
              rows of a retried chunk come after the others in to_root / collect.
     `files` may also be such a list of records.
-    timeout  seconds per request to the file server (an open, a stat, one vector read: not per chunk), so that a
-             server that stops answering raises (and remote_strategy applies) instead of hanging for XRootD's 30
-             minutes; raise it for a slow link with large chunks; None: uproot's default (no limit for XRootD)
+    timeout  seconds per request to the file server (an open, a stat, one vector read: not per chunk; whole seconds,
+             rounded up, as the XRootD client takes them), so that a server that stops answering raises (and
+             remote_strategy applies) instead of hanging for XRootD's 30 minutes; raise it for a slow link with large
+             chunks; None: uproot's default (no limit for XRootD)
     uproot_options  more uproot.open options ({"handler": ..., "num_workers": ...}); the timeout goes as timeout=
     """
     ds = Dataset(files, tree, step, entry_start, entry_stop, threads, friends, rdf_compatible, remote_strategy, retries,

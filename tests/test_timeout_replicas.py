@@ -160,11 +160,30 @@ def test_stalled_open_skipped(server, good, tmp_path):
 def test_timeout_and_uproot_options(good):
     ds = aks.read_root(good, timeout=None, uproot_options={"num_workers": 2})._dataset
     assert ds._open_kwargs() == {"num_workers": 2}  # None: nothing given, uproot's default
-    assert aks.read_root(good)._dataset._open_kwargs() == {"timeout": 30.0}
+    for given, sent in ((None, 30), (30, 30), (30.0, 30), (2.5, 3), (0.2, 1)):  # whole seconds, as XRootD takes them
+        kw = (aks.read_root(good) if given is None else aks.read_root(good, timeout=given))._dataset._open_kwargs()
+        assert kw == {"timeout": sent} and type(kw["timeout"]) is int
     with pytest.raises(ValueError, match="timeout once"):
         aks.read_root(good, uproot_options={"timeout": 5})
     with pytest.raises(ValueError, match="timeout once"):
         aks.read_samples({"A": {"files": [good]}}, uproot_options={"timeout": 5})
+
+
+class IntTimeoutSource(uproot.source.file.MemmapSource):
+    """a local-file source that refuses a timeout that is not an int, as the XRootD client (File.open, vector_read)."""
+
+    def __init__(self, file_path, **options):
+        if type(options.get("timeout")) is not int:
+            raise TypeError(f"integer argument expected for timeout, got {options.get('timeout')!r}")
+        super().__init__(file_path, **options)
+
+
+def test_timeout_reaches_uproot_as_an_int(good, tmp_path):
+    other = _write(tmp_path / "other.root", seed=5)
+    for timeout in (30, 30.0, 0.5):
+        df = aks.read_root([[good, other], other], step=1000, timeout=timeout,
+                           uproot_options={"handler": IntTimeoutSource})
+        assert df.count().value == 10000  # schema, entry counts and reads: every open got an int
 
 
 class MarkingSource(uproot.source.file.MemmapSource):
