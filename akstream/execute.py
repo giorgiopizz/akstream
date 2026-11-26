@@ -20,7 +20,7 @@ import numpy as np
 
 from . import jagged
 from . import rows as R
-from .graph import Call, Source, Take, Zip, _nodes_in, lift, resolve
+from .graph import Call, Scalar, Source, Take, Zip, _nodes_in, lift, resolve
 
 sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
 
@@ -263,6 +263,9 @@ class ChunkContext:
             return self.value(alt)
         if isinstance(node, Source):
             return self.chunk.get(node.branch)
+        if isinstance(node, Scalar):
+            ds = self.chunk.reader.dataset
+            return node.value_for(ds.sample_of(self.chunk.path) if hasattr(ds, "sample_of") else None)
         if isinstance(node, Call):
             args, kwargs = _call_args(node, self.value)
             return _check_length(node, R.normalize(_apply(node.fn, args, kwargs)), self.size(node.space))

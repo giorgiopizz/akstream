@@ -94,6 +94,30 @@ class Call(Node):
         return self.name
 
 
+class Scalar(Node):
+    """a sum / count result inside an expression (df.genWeight / df.sum("genWeight")): one number, per sample with
+    several samples. The engine (engine._resolve_scalars) either computes it in a pass before this one (mode "value")
+    or, when it only scales histogram / sum weights, evaluates it as 1 and applies it to those results at the end
+    (mode "deferred")."""
+    kind = "scalar"
+
+    def __init__(self, space, result):
+        super().__init__(space)
+        self.result = result
+        self.mode = None
+
+    def label(self):
+        return f"{type(self.result).__name__.lower()}"
+
+    def value_for(self, sample):
+        if self.mode == "deferred":
+            return 1.0
+        if not self.result._done:
+            raise RuntimeError("a sum used in an expression is not computed yet (the engine computes it first)")
+        v = self.result._value
+        return v[sample] if isinstance(v, dict) else v
+
+
 class Take(Node):
     kind = "take"
 

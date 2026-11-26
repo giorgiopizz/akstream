@@ -22,8 +22,8 @@ import numpy as _np
 from .engine import compute, last_failed, last_stats, varied
 from .expr import Collection, Expr, call, zip_record
 from .frame import Frame
-from .io import ArraysDataset, Dataset, Friend, ParquetDataset
-from .results import IntCategory, Regular, Variable
+from .io import ArraysDataset, Dataset, Friend, ParquetDataset, SamplesDataset
+from .results import IntCategory, Regular, Variable, to_hist
 from . import vector as _vector
 
 try:
@@ -31,7 +31,7 @@ try:
 except _metadata.PackageNotFoundError:  # a source tree that is not installed (python setup.py build_ext --inplace)
     __version__ = "unknown"
 
-__all__ = ["read_root", "read_parquet", "from_arrays", "compute", "varied", "apply", "onnx", "checkpoint", "checked", "Frame", "Expr", "Collection",
+__all__ = ["read_root", "read_samples", "read_parquet", "from_arrays", "to_hist", "compute", "varied", "apply", "onnx", "checkpoint", "checked", "Frame", "Expr", "Collection",
            "Friend", "IntCategory", "Regular", "Variable", "last_stats", "last_failed", "zip", "p4", "collins_soper", "delta_r"]
 
 
@@ -61,6 +61,27 @@ def read_root(files, tree="Events", step=200_000, entry_start=0, entry_stop=None
     """
     ds = Dataset(files, tree, step, entry_start, entry_stop, threads, friends, rdf_compatible, remote_strategy, retries,
                  retry_delay)
+    return Frame(ds, ds.root)
+
+
+def read_samples(samples, tree="Events", step=200_000, threads=0, rdf_compatible=False, remote_strategy=0, retries=3,
+                 retry_delay=10.0):
+    """a Frame over several samples: {name: {"files": ..., "tree": ..., "step": ..., constant: value, ...}} (tree and
+    step default to the arguments; every other key is a constant column of that sample: xs, is_data, ...).
+
+    df.sample         the sample of each row; df.sample == "DY" in selections
+    df.xs             a constant: its value on the rows of each sample (a constant named as a branch stands in for it
+                      on that sample: {"data": {"files": ..., "genWeight": 1.0}})
+    results           per sample: a histogram is {sample: hist} ({sample: {variation: hist}} with aks.varied; a
+                      variation runs on the samples whose files have its branches); aks.to_hist(h) gives one hist with
+                      a sample axis. collect is over every sample (with the sample column); to_root / to_parquet write
+                      one file with a "sample" column, or one per sample with {sample} in the path
+    df.sum(...) in an expression (df.genWeight * df.xs / df.sum("genWeight")): per sample; when it only scales
+                      histogram / sum weights it is applied at the end of the same pass, else (a selection, a written
+                      column) it needs a pass of its own before (with a warning)
+    A chunk never mixes samples. A branch missing from a sample's files is an error when that sample's chunks need it
+    (a selection does not avoid the read): give it as a constant of that sample."""
+    ds = SamplesDataset(samples, tree, step, threads, rdf_compatible, remote_strategy, retries, retry_delay)
     return Frame(ds, ds.root)
 
 

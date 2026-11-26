@@ -59,6 +59,8 @@ df.hist("mjj", (40, 0, 4000))
 |---|---|
 | `aks.read_root(files, tree, step, entry_start, entry_stop, threads, friends, rdf_compatible)` | a `Frame` (files: path, glob, list or `file.root:tree`); `friends={tree: files}` = TTree friends (same entries, one file per main file), `aks.Friend(files, match={"gj_event": "event"})` also checks the alignment chunk by chunk; `rdf_compatible=True`: evaluate as C++ / RDataFrame does (double literals in expression strings, ROOT GenVector 4-vectors), to reproduce RDF code bit for bit |
 | `read_root(..., remote_strategy=0 / 1 / 2, retries, retry_delay)`, `aks.last_failed` | unreadable chunks: raise / skip / retry at the end; the skipped ones as records, `read_root(aks.last_failed)` processes them later |
+| `aks.read_samples({"DY": {"files": [...], "xs": 6077.0}, "data": {"files": [...], "genWeight": 1.0}}, tree, step)` | one `Frame` over several samples (per-sample `files`, `tree`, `step`; every other key a constant column, standing in for a branch the sample lacks); `df.sample == "DY"` in selections; results per sample: `histos["mll"].value["DY"]["jes:up"]` (a plain `hist.Hist`); a variation runs on the samples that have its branches |
+| `df.genWeight * df.xs / df.sum("genWeight")` | a sum inside an expression (per sample with `read_samples`): applied at the end of the same pass when it only scales histogram / sum weights, else computed in a pass of its own first, with a warning |
 | `aks.read_parquet(files, step, entry_start, entry_stop, threads)` | a `Frame` over flat-ntuple parquet files (numbers, booleans and lists of them: `nJet`, `Jet_pt`, ... as collections); other columns skipped with a warning; needs pyarrow (`pip install akstream[parquet]`) |
 | `aks.from_arrays(data, step)` | a `Frame` over arrays in memory: a dict of numpy / awkward arrays, an awkward record array, or a pandas DataFrame |
 | `df.to_awkward(cols)`, `df.to_numpy(cols)`, `df.to_pandas(cols)` | the selected rows, computed now (the inverse of `from_arrays`) |
@@ -81,7 +83,7 @@ df.hist("mjj", (40, 0, 4000))
 | `df.hist(x, (n, lo, hi) / edges / axis, weight)`, `df.hist([x, y, ...], axes=[...])`, `df.hists({name: binning}, weight, varied)` | `hist.Hist` (Weight storage), any number of dimensions; axes `aks.Regular`, `aks.Variable`, `aks.IntCategory` (or the hist ones); x a column or expression string; jagged x fills per object |
 | `df.sum(col, weight)`, `df.count()`, `df.groupby(key).sum(col) / .count()` | `df.count()` = the number of rows; a sum of weights is `df.sum("weight")` |
 | `df.collect(cols)`, `df.head(n)`, `df.peek(expr)`, `df.to_root(path, cols)` | awkward arrays / a TTree written with uproot (collections as `nX` + `X_f`) |
-| `df.to_parquet(path, cols, row_group_entries, compression="zstd", counters=True)` | the same rows and columns as `to_root`, as a flat parquet file (collections as `nX` + `X_f` lists; `aks.varied` too) |
+| `df.to_parquet(path, cols, row_group_entries, compression="auto", counters=True)` | the same rows and columns as `to_root`, as a flat parquet file (collections as `nX` + `X_f` lists; `aks.varied` too) |
 | `aks.varied(df.to_root("out.root", cols))` | one file for every variation (as RDataFrame's Snapshot with `fIncludeVariations`): the rows selected in the nominal or in any variation; `col` = nominal value on every row, `col__jes_up` only where that variation changes `col`, `passed` and `passed__jes_up` (only variations that can move the selection) |
 | `aks.varied(df.to_root("out/{tag}/f.root", cols))` | one file per variation in the same pass (`{variation}`, `{group}`, `{tag}`; nominal = "nominal"): per chunk the nominal rows with the rows a variation changes replaced by their recomputation |
 | `df.vary(col, up=alt, down=alt, name=)`, `df.vary([col, ...], up=[alt, ...], down=[...], name=)` | variations `name:up`, `name:down` (col = a column, or `("Jet", "pt")`; a list = columns varied together; alternative = branch, expression string, or lazy column; name defaults to the column for one column); a varied branch varies wherever it is read, a varied defined column from there on |
@@ -171,7 +173,7 @@ differently) so its floating point matches numpy exactly.
 ## Tests
 
     pip install -e .[test,onnx]
-    pytest                                   # 246 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
+    pytest                                   # 253 tests: vs plain awkward / numpy on synthetic NanoAOD-like trees
 
 The tests that compare with ROOT itself (GenVector arithmetic) run when PyROOT is importable and are skipped otherwise.
 

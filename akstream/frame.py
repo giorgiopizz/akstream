@@ -469,11 +469,12 @@ class Frame:
             columns = getattr(self, "_projection", None) or self.columns
         return res.ToRoot(self, path, columns, tree, basket_entries, compression)
 
-    def to_parquet(self, path, columns=None, row_group_entries=200_000, compression="zstd", counters=True):
+    def to_parquet(self, path, columns=None, row_group_entries=200_000, compression="auto", counters=True):
         """write columns to a flat-ntuple parquet file, as to_root: plain columns as they are, a collection as nX
         (int32, counters=False: without) and its X_<field> list columns; ("X", [fields]) for some fields only. With
         aks.varied(...), one file per variation ({variation} / {group} / {tag} in `path`). One row group per
-        `row_group_entries` rows; `compression` as pyarrow (zstd, snappy, gzip, lz4, None). Needs pyarrow."""
+        `row_group_entries` rows; `compression` as pyarrow (zstd, snappy, gzip, lz4, None; "auto": zstd when this
+        pyarrow has it, else snappy, e.g. LCG_110's). Needs pyarrow."""
         if columns is None:
             columns = getattr(self, "_projection", None) or self.columns
         return res.ToParquet(self, path, columns, row_group_entries, compression, counters)

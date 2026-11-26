@@ -85,6 +85,42 @@ before it is processed, so a failure never leaves a chunk half-filled (the excep
 middle of a chunk, which is read in bulk from the second chunk on, raises); a skipped chunk of data is missing
 luminosity, so check `aks.last_failed` before using the result.
 
+**Several samples**: `aks.read_samples(samples, tree="Events", step=200_000, threads=0, rdf_compatible=False,
+remote_strategy=0, retries=3, retry_delay=10.0)` is one frame over several samples:
+
+```python
+df = aks.read_samples({
+    "DY":   {"files": "skims/DY_*.root", "xs": 6077.0, "is_data": False},
+    "EWKZ": {"files": [...], "xs": 1.2, "step": 100_000, "is_data": False},
+    "data": {"files": [...], "genWeight": 1.0, "is_data": True},   # a constant standing in for a missing branch
+})
+df["weight"] = df.genWeight * df.xs / df.sum("genWeight")     # per sample, see below
+histos = df.hists({"mll": (80, 70, 150)}, weight="weight")
+histos["mll"].value["DY"]                     # a hist.Hist; with aks.varied: histos["mll"].value["DY"]["jes:up"]
+```
+
+- Each sample: `files` (path, glob, list), optional `tree` and `step`; every other key is a constant column with one
+  value per sample (numbers, booleans). `df.sample` is the sample of each row (`df.sample == "DY"`). A chunk never mixes
+  samples.
+- A branch missing from a sample's files is an error when that sample's chunks need it, even if a selection then drops
+  their rows (it is read for the whole chunk): give it as a constant of that sample (`"genWeight": 1.0` for data).
+- Results are per sample: histograms, sums, counts, group sums, cutflows (`{sample: value}`; every sample, also without
+  rows). A variation runs only on the samples whose files have the branches its alternatives read: the others have only
+  `"nominal"` (`aks.to_hist` uses that sample's nominal for them). `collect` / `peek` are over every sample (add the
+  `sample` column); `to_root` / `to_parquet` write one file with a `sample` column, or one per sample with `{sample}` in
+  the path.
+- Memory: per (sample, variation) only what exists. If you ever want one hist with sample / variation axes (dense),
+  `aks.to_hist(histos["mll"].value)` builds it from the dictionary.
+
+**Sums inside expressions** (`df.genWeight / df.sum("genWeight")`, `df.count()`; per sample with `read_samples`):
+a sum is known only at the end of a pass, so
+- when it only multiplies or divides histogram / sum weights, the pass fills with 1 in its place and each histogram is
+  scaled at the end (`sumw * s`, `sumw2 * s^2`): one pass, the sum and the histograms over exactly the same chunks;
+- anywhere else (a selection, a histogram axis, a written column, a non-linear expression), it is computed in a pass of
+  its own before, with a RuntimeWarning naming the use. With `remote_strategy="skip"` the two passes may then read
+  different chunks.
+A sum computed before (`s.value`) is a plain constant. Sums of unskimmed files give the generated sum of weights.
+
 **Parquet files**: `aks.read_parquet(files, step=200_000, entry_start=0, entry_stop=None, threads=0,
 rdf_compatible=False)` reads flat ntuples: one row per entry, columns of numbers, booleans or lists of them (NanoAOD
 style `nJet`, `Jet_pt`, `Jet_eta`, ...: collections as in `read_root`). Only the columns the results need are read;
@@ -244,7 +280,7 @@ Evaluation: per chunk, each variation is recomputed only on the rows where it ch
 | `df.report(weight=)` | cutflow `[(filter name, entries, efficiency vs previous, cumulative efficiency)]`; `print(report)` shows a table |
 | `df.collect(columns)` | an awkward record array (or `df[["a", "b"]].collect()`) |
 | `df.to_root(path, columns, tree="Events", compression=)` | writes a TTree with uproot; value `{"files": [...], "entries": n}`. Collections are written as `nX` + `X_<field>`; `("Jet", ["pt", "eta"])` writes a collection with only those fields |
-| `df.to_parquet(path, columns, row_group_entries=200_000, compression="zstd", counters=True)` | the same rows and columns as `to_root`, written with pyarrow as a flat parquet file: plain columns as they are, a collection as `nX` (int32; `counters=False`: none) + `X_<field>` lists, one row group per `row_group_entries` rows; `aks.varied` as for `to_root` |
+| `df.to_parquet(path, columns, row_group_entries=200_000, compression="auto", counters=True)` | the same rows and columns as `to_root`, written with pyarrow as a flat parquet file: plain columns as they are, a collection as `nX` (int32; `counters=False`: none) + `X_<field>` lists, one row group per `row_group_entries` rows; `aks.varied` as for `to_root` |
 | `aks.varied(df.to_root("out.root", cols))` | one file for every variation (as RDataFrame's Snapshot with `fIncludeVariations`, ROOT 6.40): the rows the selection keeps in the nominal or in at least one variation, in entry order. `col` is the nominal value on every row (also where only a variation selects it; a nominal value that cannot be computed there, e.g. `jets[:, 1]` with one nominal jet, is written as 0 with a warning). `col__<v>` (`"jes:up"` -> `col__jes_up`; a collection `X`: `nX__jes_up`, `X_<field>__jes_up`) only where variation v can change `col`: its value where v selects the row, 0 / empty elsewhere. `passed`: the nominal selection keeps the row; `passed__<v>` only for the variations that can change the selection (for the others it is `passed`). Read back, `X_<field>__<v>` form the collection `X__<v>`. The same with `to_parquet` |
 | `aks.varied(df.to_root("out/{tag}/f.root", cols))` | one file per variation in the same pass: `{variation}`, `{group}` and `{tag}` in the path (`"jet:jes_up"` -> group `jet`, tag `jes_up`; nominal = `"nominal"`) |
 

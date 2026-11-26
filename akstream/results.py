@@ -448,6 +448,7 @@ _lift = lift
 
 class Hist(Result):
     """a weighted histogram (no axes: a sum / count)."""
+    _deferred = ()  # [(sum result, power)]: sums inside the weight, applied at the end (engine._resolve_scalars)
 
     def __init__(self, frame, columns, axes, weight=None, name=None):
         super().__init__(frame)
@@ -667,7 +668,30 @@ class Hist(Result):
         h._akstream_count = acc.count.reshape(shape)  # unweighted entries per bin (ROOT fEntries)
         return h
 
-    def finalize(self, state):
+    def _scale(self, sample):
+        """the product of the deferred sums (per sample) to the powers they enter the weight with."""
+        f = 1.0
+        for res, p in self._deferred:
+            v = res._value
+            f *= float(v[sample] if isinstance(v, dict) else v) ** p
+        return f
+
+    def finalize(self, state, sample=None):
+        out = self._finalize(state)
+        if not self._deferred:
+            return out
+        f = self._scale(sample)
+        for h in (out.values() if self.variations is not None else [out]):
+            if isinstance(h, dict):  # no axes: a sum
+                h["sumw"] *= f
+                h["sumw2"] *= f * f
+            else:
+                view = h.view(flow=True)
+                view.value *= f
+                view.variance *= f * f
+        return out
+
+    def _finalize(self, state):
         nominal = self._finish(state["nominal"])
         if self.variations is None:
             return nominal
@@ -696,8 +720,8 @@ class Sum(Hist):
             weight = column
         super().__init__(frame, [], [], weight)
 
-    def finalize(self, state):
-        out = super().finalize(state)
+    def finalize(self, state, sample=None):
+        out = super().finalize(state, sample)
         pick = (lambda d: d["sumw"]) if self.weight is not None else (lambda d: d["count"])
         if self.variations is None:
             return pick(out)
@@ -712,17 +736,27 @@ class Report:
 
     @property
     def value(self):
+        values = [r.value for _, r in self.steps]
+        if values and isinstance(values[0], dict):  # several samples: one cutflow each
+            return {name: self._rows([v[name] for v in values]) for name in values[0]}
+        return self._rows(values)
+
+    def _rows(self, values):
         out, prev = [], None
         first = None
-        for label, r in self.steps:
-            n = r.value
+        for (label, _), n in zip(self.steps, values):
             first = n if first is None else first
             out.append((label, n, n / prev if prev else float("nan"), n / first if first else float("nan")))
             prev = n
         return out
 
     def __repr__(self):
-        rows = self.value
+        value = self.value
+        if isinstance(value, dict):
+            return "\n\n".join(f"{name}:\n" + self._table(rows) for name, rows in value.items())
+        return self._table(value)
+
+    def _table(self, rows):
         width = max(len(r[0]) for r in rows)
         lines = [f"{label:<{width}}  {n:>14.6g}  {eff:8.2%}  {cum:8.2%}" if i else f"{label:<{width}}  {n:>14.6g}"
                  for i, (label, n, eff, cum) in enumerate(rows)]
@@ -767,7 +801,9 @@ class GroupSum(Result):
 
 
 class Collect(Result):
-    """the values of some columns, concatenated over all chunks (nominal only)."""
+    """the values of some columns, concatenated over all chunks (nominal only; with several samples, over all of
+    them: add the "sample" column to tell them apart)."""
+    per_sample = False
 
     def __init__(self, frame, columns, names=None):
         super().__init__(frame)
@@ -836,6 +872,11 @@ class ToRoot(Result):
         self.compression = compression
         self.names, self.columns = [], []
         from .expr import Collection
+        # several samples: one file per sample with {sample} in the path, else one file with a "sample" column
+        self.per_sample = "{sample}" in self.path
+        columns = list(columns)
+        if getattr(frame._dataset, "sample_names", None) and not self.per_sample and "sample" not in columns:
+            columns.append("sample")
         for c in columns:
             if isinstance(c, tuple):  # ("Jet", ["pt", "eta", ...]): a collection with only these fields
                 c, fields = c
@@ -876,18 +917,21 @@ class ToRoot(Result):
         self.out_names = out
 
     def init_state(self):
-        return {"writers": {}, "part": None, "chunk": None, "corr": {}}
+        return {"writers": {}, "part": None, "sample": None, "chunk": None, "corr": {}}
 
     # ------------------------------------------------------------ writers (one per variation)
     SUFFIX = ".root"
 
-    def _file_path(self, variation, part):
+    def _file_path(self, variation, part, sample=None):
         path = self.path
+        fields = {"sample": sample} if self.per_sample else {}
         if self.variations is not None and not self.merged:
             if not any(k in path for k in ("{variation}", "{group}", "{tag}")):
                 raise ValueError(f"a varied to_root path needs {{variation}} (or {{group}} / {{tag}}): {path}")
             group, _, tag = variation.partition(":")
-            path = path.format(variation=variation, group=group, tag=tag or group)
+            fields.update(variation=variation, group=group, tag=tag or group)
+        if fields:
+            path = path.format(**fields)
         return path if part is None else path.replace(self.SUFFIX, f"_part{part}{self.SUFFIX}")
 
     def _writer(self, state, variation):
@@ -1007,7 +1051,7 @@ class ToRoot(Result):
         import uproot
         data = self._branches(w["buffer"])
         if w["file"] is None:
-            path = self._file_path(variation, state["part"])
+            path = self._file_path(variation, state["part"], state.get("sample"))
             kw = {} if self.compression is None else {"compression": self.compression}
             w["file"] = uproot.recreate(path, **kw)
             w["path"] = path
@@ -1080,7 +1124,7 @@ class ToParquet(ToRoot):
 
     SUFFIX = ".parquet"
 
-    def __init__(self, frame, path, columns, row_group_entries=200_000, compression="zstd", counters=True):
+    def __init__(self, frame, path, columns, row_group_entries=200_000, compression="auto", counters=True):
         from .io import _pyarrow
         _pyarrow()
         super().__init__(frame, path, columns, None, row_group_entries, compression)
@@ -1116,7 +1160,7 @@ class ToParquet(ToRoot):
             return
         table = self._table(w["buffer"])
         if w["file"] is None:
-            path = self._file_path(variation, state["part"])
+            path = self._file_path(variation, state["part"], state.get("sample"))
             w["file"] = _pyarrow_writer(path, table.schema, self.compression)
             w["path"] = path
         elif table.schema != w["file"].schema:
@@ -1129,7 +1173,10 @@ class ToParquet(ToRoot):
 
 def _pyarrow_writer(path, schema, compression):
     from .io import _pyarrow
-    return _pyarrow().parquet.ParquetWriter(path, schema, compression=compression or "none")
+    pa = _pyarrow()
+    if compression == "auto":  # not every pyarrow build has zstd (LCG_110's has not)
+        compression = "zstd" if pa.Codec.is_available("zstd") else "snappy"
+    return pa.parquet.ParquetWriter(path, schema, compression=compression or "none")
 
 
 def _to_arrow(pa, v):
@@ -1148,3 +1195,29 @@ def _to_arrow(pa, v):
     arr = ak.to_arrow(v, extensionarray=False, list_to32=True)
     counts = np.asarray(ak.fill_none(ak.num(v, axis=1), 0)) if v.ndim > 1 else None
     return arr, counts
+
+
+def to_hist(histos):
+    """{sample: hist} or {sample: {variation: hist}} (the value of a histogram of aks.read_samples) as one hist.Hist
+    with a "dataset" StrCategory axis of the samples (hist reserves "sample") and a "variation" one after the
+    histogram's axes: h[..., hist.loc("DY")]. A variation a sample does not have (data and a JES variation) is that
+    sample's nominal there."""
+    import hist
+    samples = list(histos)
+    varied = isinstance(next(iter(histos.values())), dict)
+    variations = list(dict.fromkeys(v for name in samples for v in histos[name])) if varied else None
+    first = next(iter(histos.values()))
+    h0 = first["nominal"] if varied else first
+    axes = list(h0.axes) + [hist.axis.StrCategory(samples, name="dataset")]
+    if varied:
+        axes.append(hist.axis.StrCategory(variations, name="variation"))
+    out = hist.Hist(*axes, storage=hist.storage.Weight(), name=h0.name)
+    view = out.view(flow=True)
+    for i, name in enumerate(samples):
+        for j, v in enumerate(variations or [None]):
+            h = histos[name] if v is None else histos[name].get(v, histos[name]["nominal"])
+            src = h.view(flow=True)
+            dst = view[..., i] if v is None else view[..., i, j]
+            dst["value"] = src.value
+            dst["variance"] = src.variance
+    return out

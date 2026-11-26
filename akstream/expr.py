@@ -8,7 +8,7 @@ import operator
 import awkward as ak
 import numpy as np
 
-from .graph import Call, Node, Source, Take, Zip, key
+from .graph import Call, Node, Scalar, Source, Take, Zip, key
 
 # numpy functions that are row-local (row i of the output only depends on row i of the inputs)
 _NUMPY_LOCAL = {np.where, np.clip, np.select, np.isnan, np.isfinite, np.isinf, np.nan_to_num, np.round, np.around,
@@ -43,10 +43,35 @@ def _unwrap(obj):
     return obj
 
 
+def _scalars(obj, space):
+    """a sum / count result in an expression -> its Scalar node in `space` (hash-consed)."""
+    from .results import Result, Sum
+    if isinstance(obj, Result):
+        if not isinstance(obj, Sum) or obj.variations is not None:
+            raise TypeError(f"only a sum or a count (df.sum(...), df.count()) can be used in an expression, not "
+                            f"{type(obj).__name__}" + (" with variations" if isinstance(obj, Sum) else ""))
+        if obj.dataset is not space.dataset:
+            raise ValueError("a sum from another dataset in an expression")
+        k = ("scalar", space.id, id(obj))
+        node = space.dataset.cache.get(k)
+        if node is None:
+            node = space.dataset.cache[k] = Scalar(space, obj)
+            space.dataset.keep.append(obj)
+        return node
+    if isinstance(obj, tuple):
+        return tuple(_scalars(x, space) for x in obj)
+    if isinstance(obj, list):
+        return [_scalars(x, space) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _scalars(v, space) for k, v in obj.items()}
+    return obj
+
+
 def call(fn, *args, _name=None, _expensive=False, _cutoff=False, **kwargs):
     """the lazy fn(*args, **kwargs): an Expr in the (single) space of its column arguments. Hash-consed."""
     args, kwargs = _unwrap(args), _unwrap(kwargs)
     space = _space_of(args, kwargs)
+    args, kwargs = _scalars(args, space), _scalars(kwargs, space)
     cache = space.dataset.cache
     k = ("call", id(fn), key(args), key(kwargs))
     node = cache.get(k)
@@ -112,8 +137,22 @@ class Expr:
     __le__ = lambda s, o: s._bin(operator.le, o, "le")
     __gt__ = lambda s, o: s._bin(operator.gt, o, "gt")
     __ge__ = lambda s, o: s._bin(operator.ge, o, "ge")
-    __eq__ = lambda s, o: s._bin(operator.eq, o, "eq")
-    __ne__ = lambda s, o: s._bin(operator.ne, o, "ne")
+    __eq__ = lambda s, o: s._bin(operator.eq, s._sample_code(o), "eq")
+    __ne__ = lambda s, o: s._bin(operator.ne, s._sample_code(o), "ne")
+
+    def _sample_code(self, other):
+        """df.sample == "DY": the sample name as its index (several samples, aks.read_samples)."""
+        if not isinstance(other, str):
+            return other
+        node = self.node
+        while isinstance(node, Take):
+            node = node.parent
+        names = getattr(self.node.space.dataset, "sample_names", None)
+        if names is None or not (isinstance(node, Source) and node.branch == "sample"):
+            return other
+        if other not in names:
+            raise KeyError(f"no sample {other!r}: {names}")
+        return names.index(other)
     __neg__ = lambda s: call(operator.neg, s, _name="neg")
     __pos__ = lambda s: s
     __abs__ = lambda s: call(np.abs, s, _name="abs")

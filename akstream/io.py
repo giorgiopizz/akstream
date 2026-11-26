@@ -72,6 +72,16 @@ class Friend:
 class Dataset:
     """files + tree + chunking + the branch schema. Owns the graph cache of every frame built on it."""
 
+    lenient = False  # several samples (SamplesDataset): a branch missing from a sample's files fails only when read
+
+    def tree_for(self, path):
+        """the tree name of the file `path`."""
+        return self.tree
+
+    def constants_for(self, path):
+        """{column: value} given as constants for the rows of `path` (a sample's), or None."""
+        return None
+
     def __init__(self, files, tree="Events", step=200_000, entry_start=0, entry_stop=None, threads=0, friends=None,
                  rdf_compatible=False, remote_strategy=0, retries=3, retry_delay=10.0):
         if remote_strategy not in STRATEGIES:
@@ -276,7 +286,7 @@ class Reader:
                 f = None
                 if tree is None:
                     f = uproot.open(path if friend is None else ds.friends[friend][path])
-                    tree = f[ds.tree if friend is None else friend]
+                    tree = f[ds.tree_for(path) if friend is None else friend]
                 if friend is not None:
                     main = self._open.get((path, None))
                     n = main[1].num_entries if main is not None else ds._entries.get(path)
@@ -313,9 +323,12 @@ class Reader:
         out = {}
         if ENTRY in wanted:
             out[ENTRY] = np.arange(start, stop, dtype=np.int64)
+        consts = ds.constants_for(path) or {}
         by_tree = {}
         for b in wanted:
-            if b != ENTRY:
+            if b in consts:
+                out[b] = np.full(stop - start, consts[b], dtype=ds.dtypes[b])
+            elif b != ENTRY:
                 by_tree.setdefault(ds.source_tree.get(b), []).append(b)
         kw = {}
         if self._executor is not None:
@@ -324,7 +337,9 @@ class Reader:
             t = tree if friend is None else self.open(path, friend)
             present = set(t.keys())
             missing = [b for b in names if b not in present]
-            if missing:
+            if missing and ds.lenient:  # another sample's branch: an error only if this chunk needs it (Chunk.get)
+                names = [b for b in names if b in present]
+            elif missing:
                 raise KeyError(f"{path}: branches not in the tree {friend or ds.tree}: {missing[:10]}")
             flat = [b for b in names if not ds.branches.get(b, False)]
             jagged = [b for b in names if ds.branches.get(b, False)]
@@ -394,11 +409,18 @@ class Chunk:
             jagged = ds.branches.get(branch)
             if jagged is None:
                 raise KeyError(f"no branch {branch!r} in the tree")
+            consts = ds.constants_for(self.path) or {}
             if branch == ENTRY:
                 a = np.arange(self.start, self.stop, dtype=np.int64)
+            elif branch in consts:
+                a = np.full(self.n, consts[branch], dtype=ds.dtypes[branch])
             else:
                 friend = ds.source_tree.get(branch)
                 t = self.tree if friend is None else self.reader.open(self.path, friend)
+                if ds.lenient and branch not in t.keys():
+                    raise KeyError(f"branch {branch!r} is not in the files of sample {ds.sample_of(self.path)!r}: give "
+                                   f"it as a constant of that sample in read_samples ({{{branch!r}: value}}): it is "
+                                   f"read on every chunk that needs it, a selection does not avoid the read")
                 a = t[branch].array(entry_start=self.start, entry_stop=self.stop, library="ak" if jagged else "np")
             self.arrays[branch] = a
             self.reader.add_branch(branch)
@@ -406,6 +428,110 @@ class Chunk:
             if friend is not None:
                 self.check_friend(friend)
         return a
+
+
+# ---------------------------------------------------------------- several samples (aks.read_samples)
+SAMPLE = "sample"  # the column of the sample index (df.sample == "DY")
+_SAMPLE_KEYS = ("files", "tree", "step")
+
+
+class SamplesDataset(Dataset):
+    """several samples, each a set of ROOT files with its own tree / step and constants (columns with one value per
+    sample: xs, is_data, ...); a chunk never mixes samples. The schema is the union of the samples' (a branch missing in
+    a sample is an error when that sample's chunks need it, even if a selection then drops their rows: a constant of
+    the same name stands in for it)."""
+
+    lenient = True
+
+    def __init__(self, samples, tree="Events", step=200_000, threads=0, rdf_compatible=False, remote_strategy=0,
+                 retries=3, retry_delay=10.0):
+        if not isinstance(samples, dict) or not samples:
+            raise ValueError("read_samples: a non-empty dict {name: {'files': ..., constants...}}")
+        self.sample_names = [str(n) for n in samples]
+        self.children, self.sample_constants, self._sample_of = {}, {}, {}
+        for name, spec in samples.items():
+            name = str(name)
+            if not isinstance(spec, dict) or "files" not in spec:
+                raise ValueError(f"read_samples: sample {name!r} needs a dict with 'files' (and optional tree, step, "
+                                 f"constants)")
+            consts = {k: v for k, v in spec.items() if k not in _SAMPLE_KEYS}
+            for k, v in consts.items():
+                if k in ("friends", "entry_start", "entry_stop", "remote_strategy"):
+                    raise ValueError(f"read_samples: {k!r} per sample is not supported (yet)")
+                if isinstance(v, (bool, int, float, np.bool_, np.integer, np.floating)):
+                    continue
+                raise TypeError(f"read_samples: constant {k!r} of sample {name!r} is {type(v).__name__}: numbers and "
+                                f"booleans only")
+            child = Dataset(spec["files"], spec.get("tree", tree), spec.get("step", step), threads=threads,
+                            rdf_compatible=rdf_compatible, remote_strategy=remote_strategy, retries=retries,
+                            retry_delay=retry_delay)
+            for p in child.files:
+                if p in self._sample_of:
+                    raise ValueError(f"read_samples: {p} is in samples {self._sample_of[p]!r} and {name!r}")
+                self._sample_of[p] = name
+            self.children[name], self.sample_constants[name] = child, consts
+        self.branches, self.dtypes, self.present = {}, {}, {}
+        for name, child in self.children.items():
+            self.present[name] = set(child.branches)
+            for b, jagged in child.branches.items():
+                if b in self.branches and self.branches[b] != jagged:
+                    raise ValueError(f"read_samples: branch {b} is a list in one sample and a number in another")
+                self.branches.setdefault(b, jagged)
+                self.dtypes.setdefault(b, child.dtypes.get(b))
+        if SAMPLE in self.branches:
+            raise ValueError(f"read_samples: the files have a branch {SAMPLE!r}, the sample column of akstream")
+        for k in dict.fromkeys(k for c in self.sample_constants.values() for k in c):
+            if self.branches.get(k):
+                raise ValueError(f"read_samples: constant {k!r}: a list branch of that name exists")
+            if k in self.branches:  # stands in for a branch of the other samples: its type
+                dt = self.dtypes[k]
+            else:
+                dt = np.result_type(*[np.asarray(c[k]) for c in self.sample_constants.values() if k in c])
+            self.branches[k], self.dtypes[k] = False, np.dtype(dt)
+        self.branches[SAMPLE], self.dtypes[SAMPLE] = False, np.dtype(np.int32)
+        first = next(iter(self.children.values()))
+        self.files = [p for c in self.children.values() for p in c.files]
+        self.tree = tree
+        self.rdf_compatible = rdf_compatible
+        self.remote_strategy, self.retries, self.retry_delay = first.remote_strategy, first.retries, first.retry_delay
+        self._ranges = {}
+        self.friends, self.friend_match, self.source_tree = {}, {}, {}
+        self.step = int(step)
+        self.entry_start, self.entry_stop = 0, None
+        self.threads = threads
+        self.cache, self.keep, self.booked = {}, [], []
+        self.root = Space(self)
+        self._open = None
+        self._entries = {}
+        self.collections, self.counters = self._collections()
+
+    @property
+    def open_failures(self):
+        return [dict(r, sample=n) for n, c in self.children.items() for r in c.open_failures]
+
+    def sample_of(self, path):
+        return self._sample_of[path]
+
+    def tree_for(self, path):
+        return self.children[self._sample_of[path]].tree
+
+    def constants_for(self, path):
+        name = self._sample_of[path]
+        out = dict(self.sample_constants[name])
+        out[SAMPLE] = self.sample_names.index(name)
+        return out
+
+    def chunks(self):
+        return [c for child in self.children.values() for c in child.chunks()]
+
+    def _num_entries(self, path):
+        return self.children[self._sample_of[path]]._num_entries(path)
+
+    def open_tree(self, path):
+        return self.children[self._sample_of[path]].open_tree(path)
+
+    def record(self, path, start, stop, err):
+        return dict(self.children[self._sample_of[path]].record(path, start, stop, err), sample=self._sample_of[path])
 
 
 # ---------------------------------------------------------------- in-memory arrays (aks.from_arrays)
