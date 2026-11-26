@@ -18,7 +18,7 @@ import numpy as np
 from . import fused
 from .execute import ChunkContext, VariationContext
 from .graph import Call, Node, Scalar, Source, Take, Zip, walk
-from .io import ENTRY, SAMPLE, ReadAhead, error_text
+from .io import ENTRY, SAMPLE, ReadAhead, ReplicaMismatch, error_text
 
 last_stats = {}
 last_failed = []  # the chunks the last compute could not read (records: read_root(last_failed) processes them)
@@ -231,6 +231,8 @@ def _run_chunks(plan, chunks, opts, part=None):
         t0 = time.perf_counter()
         try:
             chunk = get()  # with read-ahead: the time waiting for the background read
+        except ReplicaMismatch:
+            raise
         except Exception as err:  # noqa: BLE001 (any read error: xrootd, deserialization, a vanished file)
             if strategy == 0:
                 raise
@@ -248,6 +250,8 @@ def _run_chunks(plan, chunks, opts, part=None):
             t0 = time.perf_counter()
             try:
                 chunk = reader.read(path, start, stop)
+            except ReplicaMismatch:
+                raise
             except Exception as err:  # noqa: BLE001
                 reader.forget(path)
                 still.append(((path, start, stop), err))

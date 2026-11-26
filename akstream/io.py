@@ -13,6 +13,14 @@ retries it at the end (`retries` rounds, `retry_delay` seconds apart), then skip
 records {"file", "start", "stop", "error", "tree", "friends", "match"} (stop None: the whole file, which could not be
 opened); a list of them is a valid `files` argument: read_root(failed) processes exactly those chunks.
 
+Timeout: every uproot.open gets timeout= (seconds per request: an open, a stat, one vector read), so that a server that
+stops answering raises instead of hanging; uproot_options go to uproot.open as they are.
+
+Replicas: an entry of `files` that is a list holds alternative URLs of one file; the first names it (records, samples,
+friends, output parts). A failed open or read moves on to the next replica at once (no retry_delay) and a replica that
+works stays in use (per process); a chunk fails only when every replica failed. A replica with another number of
+entries than the one counted first raises ReplicaMismatch, whatever remote_strategy.
+
 Collections: the jagged branches X_<field> of a common prefix X (NanoAOD's Jet_pt, Jet_eta, ...), with the counter nX
 when the tree has one; X_<field>__<v> (a file written with every variation) form the collection X__<v>.
 """
@@ -42,6 +50,36 @@ def expand(files):
     return out
 
 
+def expand_replicas(files):
+    """(files, {file: [urls]}) of a `files` argument whose entries may be lists of replicas (alternative URLs of one
+    file, the first naming it; no glob patterns in them)."""
+    if isinstance(files, (str, os.PathLike)):
+        files = [files]
+    out, replicas = [], {}
+    for f in files:
+        if not isinstance(f, (list, tuple)):
+            out.extend(expand([f]))
+            continue
+        urls = [os.path.expanduser(str(u)) for u in f]
+        if not urls:
+            raise ValueError("an empty list of replicas in files")
+        if any(c in u for u in urls for c in "*?["):
+            raise ValueError(f"replicas {urls}: glob patterns are not expanded in a list of replicas")
+        out.append(urls[0])
+        if len(urls) > 1:
+            replicas[urls[0]] = urls
+    return out, replicas
+
+
+class ReplicaMismatch(ValueError):
+    """a replica of a file with another number of entries than the one counted first: never skipped or retried."""
+
+
+def _timeout_like(err):
+    text = f"{type(err).__name__}: {err}"
+    return isinstance(err, TimeoutError) or any(s in text for s in ("TimeoutError", "Operation expired", "timed out"))
+
+
 def _split_tree(path, tree):
     """'file.root:Events' -> ('file.root', 'Events')."""
     m = re.match(r"^(.*\.root):(.+)$", path)
@@ -58,7 +96,8 @@ def _is_records(files):
 
 
 def error_text(err):
-    return f"{type(err).__name__}: {err}"[:500]
+    notes = "".join(f" [{n}]" for n in getattr(err, "__notes__", ()))
+    return f"{type(err).__name__}: {err}"[:500] + notes[:500]
 
 
 class Friend:
@@ -83,17 +122,20 @@ class Dataset:
         return None
 
     def __init__(self, files, tree="Events", step=200_000, entry_start=0, entry_stop=None, threads=0, friends=None,
-                 rdf_compatible=False, remote_strategy=0, retries=3, retry_delay=10.0):
+                 rdf_compatible=False, remote_strategy=0, retries=3, retry_delay=10.0, timeout=30.0,
+                 uproot_options=None):
         if remote_strategy not in STRATEGIES:
             raise ValueError(f"remote_strategy: 0 / 'raise', 1 / 'skip' or 2 / 'retry', not {remote_strategy!r}")
         self.remote_strategy = STRATEGIES[remote_strategy]
         self.retries, self.retry_delay = int(retries), float(retry_delay)
+        self._set_options(timeout, uproot_options)
         self._ranges = {}  # file -> [(start, stop or None)]: only these entries (files given as failed-chunk records)
         if _is_records(files):
             files, tree, friends = self._from_records(files, tree, friends)
         if isinstance(files, str):
             files, tree = _split_tree(files, tree)
-        self.files = expand(files)
+        self.files, self.replicas = expand_replicas(files)  # replicas: {file: [urls]}, files with several only
+        self.replica_index = {}  # file -> the replica in use (this process)
         self.tree = tree
         self.open_failures = []  # records of the files that could not be opened (remote_strategy 1 / 2)
         self.rdf_compatible = rdf_compatible
@@ -104,7 +146,8 @@ class Dataset:
                 if ffiles.match:
                     self.friend_match[name] = ffiles.match
                 ffiles = ffiles.files
-            ffiles = expand(ffiles)
+            ffiles, freplicas = expand_replicas(ffiles)
+            self.replicas.update(freplicas)
             if len(ffiles) != len(self.files):
                 raise ValueError(f"friend tree {name}: {len(ffiles)} files for {len(self.files)} main files")
             self.friends[name] = dict(zip(self.files, ffiles))
@@ -120,10 +163,9 @@ class Dataset:
         self.branches, self.dtypes = {}, {}
         for path in self.files:
             try:
-                f = uproot.open(path)
-                t = f[self.tree]
-                friend_trees = {name: uproot.open(paths[path]) for name, paths in self.friends.items()}
-                schema = [(t, None)] + [(ff[name], name) for name, ff in friend_trees.items()]
+                f, t = self._open_tree(path, self.tree)
+                friend_trees = {name: self._open_tree(paths[path], name) for name, paths in self.friends.items()}
+                schema = [(t, None)] + [(ft, name) for name, (_, ft) in friend_trees.items()]
             except Exception as err:  # noqa: BLE001 (any read error: xrootd, deserialization, a missing file)
                 if self.remote_strategy == 0 or path == self.files[-1]:
                     raise
@@ -134,7 +176,7 @@ class Dataset:
         self._entries[path] = t.num_entries
         for tree_, name in schema:
             self._add_schema(tree_, name)
-        for ff in friend_trees.values():
+        for ff, _ in friend_trees.values():
             ff.close()
         self.branches[ENTRY] = False
         self.dtypes[ENTRY] = np.dtype(np.int64)
@@ -144,6 +186,63 @@ class Dataset:
                     raise ValueError(f"friend tree {name}: match {fb!r} -> {mb!r} needs a branch of the friend and one of "
                                      f"the main tree")
         self.collections, self.counters = self._collections()
+
+    def _set_options(self, timeout, uproot_options):
+        self.timeout = None if timeout is None else float(timeout)
+        self.uproot_options = dict(uproot_options or {})
+        if "timeout" in self.uproot_options:
+            raise ValueError("uproot_options: give the timeout once, as read_root(timeout=...) / read_samples(timeout=...)")
+
+    def _open_kwargs(self):
+        kw = dict(self.uproot_options)
+        if self.timeout is not None:  # None: uproot's own default (no key: older uproot hands it to fsspec as is)
+            kw["timeout"] = self.timeout
+        return kw
+
+    def note_timeout(self, err):
+        """the hint for a timed-out request, once, on the exception (its notes are part of the error records)."""
+        if self.timeout is None or not _timeout_like(err) or not hasattr(err, "add_note"):
+            return
+        if any(n.startswith("akstream: timeout=") for n in getattr(err, "__notes__", ())):
+            return
+        err.add_note(f"akstream: timeout={self.timeout:g} s per request (an open, a stat, one vector read): raise it "
+                     f"with read_root(timeout=...) / read_samples(timeout=...) for a slow link, timeout=None for none")
+
+    def _open_tree(self, path, tree, entries=None):
+        """(uproot file, TTree `tree`) of the file `path`: its replica in use first, then the others (an open that fails
+        moves on to the next one at once; the one that opens stays in use). `entries`: the entries the file has (counted
+        on a replica before): another number raises ReplicaMismatch."""
+        urls = self.replicas.get(path, [path])
+        first = self.replica_index.get(path, 0)
+        errors = []
+        for i in range(len(urls)):
+            k = (first + i) % len(urls)
+            try:
+                f = uproot.open(urls[k], **self._open_kwargs())
+                t = f[tree]
+            except Exception as err:  # noqa: BLE001 (any open error: the next replica)
+                self.note_timeout(err)
+                errors.append((urls[k], err))
+                continue
+            if entries is not None and t.num_entries != entries:
+                f.close()
+                raise ReplicaMismatch(f"replica {urls[k]} of {path} has {t.num_entries} entries, {entries} were counted "
+                                      f"before: the replicas of a file must be identical")
+            self.replica_index[path] = k
+            return f, t
+        err = errors[-1][1]
+        if len(errors) > 1 and hasattr(err, "add_note"):
+            err.add_note("akstream: every replica failed: " + "; ".join(f"{u}: {error_text(e)[:200]}"
+                                                                      for u, e in errors[:-1]))
+        raise err
+
+    def next_replica(self, path):
+        """after a failed read of `path`: the next replica from now on; False when it has no other."""
+        urls = self.replicas.get(path)
+        if urls is None:
+            return False
+        self.replica_index[path] = (self.replica_index.get(path, 0) + 1) % len(urls)
+        return True
 
     def _add_schema(self, t, friend):
         for name in t.keys():
@@ -203,8 +302,9 @@ class Dataset:
         attempts = 1 + (self.retries if self.remote_strategy == 2 else 0)
         for attempt in range(attempts):
             try:
-                with uproot.open(path) as f:
-                    n = self._entries[path] = f[self.tree].num_entries
+                f, t = self._open_tree(path, self.tree)
+                with f:
+                    n = self._entries[path] = t.num_entries
                 return n
             except Exception as err:  # noqa: BLE001
                 if self.remote_strategy == 0:
@@ -222,17 +322,23 @@ class Dataset:
         self.open_failures.append(self.record(path, 0, None, err))
 
     def record(self, path, start, stop, err):
-        """a failed chunk, as read_root accepts it back."""
-        return {"file": path, "start": int(start), "stop": None if stop is None else int(stop), "error": error_text(err),
-                "tree": self.tree, "friends": {name: paths[path] for name, paths in self.friends.items()},
-                "match": {name: dict(m) for name, m in self.friend_match.items()}}
+        """a failed chunk, as read_root accepts it back (a file with replicas: "replicas" lists them, and so does a
+        friend's entry)."""
+        out = {"file": path, "start": int(start), "stop": None if stop is None else int(stop), "error": error_text(err),
+               "tree": self.tree,
+               "friends": {name: list(self.replicas.get(paths[path], ())) or paths[path]
+                           for name, paths in self.friends.items()},
+               "match": {name: dict(m) for name, m in self.friend_match.items()}}
+        if path in self.replicas:
+            out["replicas"] = list(self.replicas[path])
+        return out
 
     def _from_records(self, records, tree, friends):
         """files, tree and friends of a list of failed-chunk records (the ranges go to self._ranges)."""
         files, ffiles, match = [], {}, {}
         for r in records:
             if r["file"] not in self._ranges:
-                files.append(r["file"])
+                files.append(list(r["replicas"]) if r.get("replicas") else r["file"])
                 for name, p in (r.get("friends") or {}).items():
                     ffiles.setdefault(name, []).append(p)
                 match.update(r.get("match") or {})
@@ -260,6 +366,14 @@ class Dataset:
         return state
 
 
+class _FailedRead(Exception):
+    """a read error of the main tree (friend None) or of a friend tree, inside Reader._read."""
+
+    def __init__(self, err, friend):
+        super().__init__(err)
+        self.err, self.friend = err, friend
+
+
 class Reader:
     """per-worker reader: keeps the open files, reads one chunk at a time. Safe for one background read-ahead thread
     next to the main thread: the two most recent files stay open (the current chunk may still read lazily from its
@@ -284,9 +398,10 @@ class Reader:
             if hit is None:
                 tree = ds.open_tree(path) if friend is None else None
                 f = None
-                if tree is None:
-                    f = uproot.open(path if friend is None else ds.friends[friend][path])
-                    tree = f[ds.tree_for(path) if friend is None else friend]
+                if tree is None and friend is None:
+                    f, tree = ds._open_tree(path, ds.tree_for(path), ds._entries.get(path))
+                elif tree is None:
+                    f, tree = ds._open_tree(ds.friends[friend][path], friend)
                 if friend is not None:
                     main = self._open.get((path, None))
                     n = main[1].num_entries if main is not None else ds._entries.get(path)
@@ -300,13 +415,13 @@ class Reader:
                         oldf.close()
             return hit[1]
 
-    def forget(self, path):
-        """drop the cached handles of a file after a read error (a retry opens it again); not closed here: the
-        read-ahead thread may still hold it."""
+    def forget(self, path, friend=all):
+        """drop the cached handles of a file (only of its friend tree `friend`, None: the main tree) after a read error
+        (a retry opens it again); not closed here: the read-ahead thread may still hold it."""
         with self._lock:
-            for key in [k for k in self._open if k[0] == path]:
+            for key in [k for k in self._open if k[0] == path and (friend is all or k[1] == friend)]:
                 self._open.pop(key)
-            if self.dataset._open is not None and self.dataset._open[1] == path:
+            if friend in (all, None) and self.dataset._open is not None and self.dataset._open[1] == path:
                 self.dataset._open = None
 
     def add_branch(self, branch):
@@ -315,7 +430,23 @@ class Reader:
             self.prefetch.add(branch)
 
     def read(self, path, start, stop):
-        """the prefetched branches of one chunk: {branch: numpy or awkward}."""
+        """the prefetched branches of one chunk: {branch: numpy or awkward}. A read that fails on a file with replicas
+        is repeated at once on its next one, until each was tried."""
+        ds = self.dataset
+        moved = {}
+        while True:
+            try:
+                return self._read(path, start, stop)
+            except _FailedRead as failed:
+                err, friend = failed.err, failed.friend
+                ds.note_timeout(err)
+                name = path if friend is None else ds.friends[friend][path]
+                if moved.get(name, 0) + 1 >= len(ds.replicas.get(name, [name])) or not ds.next_replica(name):
+                    raise err from None
+                moved[name] = moved.get(name, 0) + 1
+                self.forget(path, friend)
+
+    def _read(self, path, start, stop):
         ds = self.dataset
         tree = self.open(path)
         with self._lock:
@@ -343,10 +474,13 @@ class Reader:
                 raise KeyError(f"{path}: branches not in the tree {friend or ds.tree}: {missing[:10]}")
             flat = [b for b in names if not ds.branches.get(b, False)]
             jagged = [b for b in names if ds.branches.get(b, False)]
-            if flat:
-                out.update(t.arrays(flat, entry_start=start, entry_stop=stop, library="np", how=dict, **kw))
-            if jagged:
-                out.update(t.arrays(jagged, entry_start=start, entry_stop=stop, library="ak", how=dict, **kw))
+            try:
+                if flat:
+                    out.update(t.arrays(flat, entry_start=start, entry_stop=stop, library="np", how=dict, **kw))
+                if jagged:
+                    out.update(t.arrays(jagged, entry_start=start, entry_stop=stop, library="ak", how=dict, **kw))
+            except Exception as err:  # noqa: BLE001 (any read error: Reader.read tries the next replica)
+                raise _FailedRead(err, friend) from err
         chunk = Chunk(self, path, tree, start, stop, out)
         for friend in by_tree:
             if friend is not None:
@@ -444,7 +578,7 @@ class SamplesDataset(Dataset):
     lenient = True
 
     def __init__(self, samples, tree="Events", step=200_000, threads=0, rdf_compatible=False, remote_strategy=0,
-                 retries=3, retry_delay=10.0):
+                 retries=3, retry_delay=10.0, timeout=30.0, uproot_options=None):
         if not isinstance(samples, dict) or not samples:
             raise ValueError("read_samples: a non-empty dict {name: {'files': ..., constants...}}")
         self.sample_names = [str(n) for n in samples]
@@ -464,7 +598,7 @@ class SamplesDataset(Dataset):
                                 f"booleans only")
             child = Dataset(spec["files"], spec.get("tree", tree), spec.get("step", step), threads=threads,
                             rdf_compatible=rdf_compatible, remote_strategy=remote_strategy, retries=retries,
-                            retry_delay=retry_delay)
+                            retry_delay=retry_delay, timeout=timeout, uproot_options=uproot_options)
             for p in child.files:
                 if p in self._sample_of:
                     raise ValueError(f"read_samples: {p} is in samples {self._sample_of[p]!r} and {name!r}")
@@ -494,6 +628,9 @@ class SamplesDataset(Dataset):
         self.tree = tree
         self.rdf_compatible = rdf_compatible
         self.remote_strategy, self.retries, self.retry_delay = first.remote_strategy, first.retries, first.retry_delay
+        self._set_options(timeout, uproot_options)
+        self.replicas = {p: urls for c in self.children.values() for p, urls in c.replicas.items()}
+        self.replica_index = {}
         self._ranges = {}
         self.friends, self.friend_match, self.source_tree = {}, {}, {}
         self.step = int(step)

@@ -22,7 +22,7 @@ import numpy as _np
 from .engine import compute, last_failed, last_stats, varied
 from .expr import Collection, Expr, call, zip_record
 from .frame import Frame
-from .io import ArraysDataset, Dataset, Friend, ParquetDataset, SamplesDataset
+from .io import ArraysDataset, Dataset, Friend, ParquetDataset, ReplicaMismatch, SamplesDataset
 from .results import IntCategory, Regular, Variable, to_hist
 from . import vector as _vector
 
@@ -32,12 +32,15 @@ except _metadata.PackageNotFoundError:  # a source tree that is not installed (p
     __version__ = "unknown"
 
 __all__ = ["read_root", "read_samples", "read_parquet", "from_arrays", "to_hist", "compute", "varied", "apply", "onnx", "checkpoint", "checked", "Frame", "Expr", "Collection",
-           "Friend", "IntCategory", "Regular", "Variable", "last_stats", "last_failed", "zip", "p4", "collins_soper", "delta_r"]
+           "Friend", "ReplicaMismatch", "IntCategory", "Regular", "Variable", "last_stats", "last_failed", "zip", "p4", "collins_soper", "delta_r"]
 
 
 def read_root(files, tree="Events", step=200_000, entry_start=0, entry_stop=None, threads=0, friends=None,
-              rdf_compatible=False, remote_strategy=0, retries=3, retry_delay=10.0):
-    """a Frame over the TTree `tree` of `files` (a path, a glob, a list, or 'file.root:tree').
+              rdf_compatible=False, remote_strategy=0, retries=3, retry_delay=10.0, timeout=30.0, uproot_options=None):
+    """a Frame over the TTree `tree` of `files` (a path, a glob, a list, or 'file.root:tree'). An entry of the list
+    that is itself a list holds replicas of one file ([[url1, url2], ...], the first naming it): a failed open or read
+    moves on to the next replica at once, and a replica that works stays in use; a chunk fails (remote_strategy) only
+    when every replica failed. Replicas must be identical: another number of entries raises ReplicaMismatch.
 
     step     entries per chunk (memory scales with it)
     threads  uproot decompression threads per process
@@ -58,14 +61,18 @@ def read_root(files, tree="Events", step=200_000, entry_start=0, entry_stop=None
              the results). The results of a run with skipped chunks are those of the other chunks; with "retry", the
              rows of a retried chunk come after the others in to_root / collect.
     `files` may also be such a list of records.
+    timeout  seconds per request to the file server (an open, a stat, one vector read: not per chunk), so that a
+             server that stops answering raises (and remote_strategy applies) instead of hanging for XRootD's 30
+             minutes; raise it for a slow link with large chunks; None: uproot's default (no limit for XRootD)
+    uproot_options  more uproot.open options ({"handler": ..., "num_workers": ...}); the timeout goes as timeout=
     """
     ds = Dataset(files, tree, step, entry_start, entry_stop, threads, friends, rdf_compatible, remote_strategy, retries,
-                 retry_delay)
+                 retry_delay, timeout, uproot_options)
     return Frame(ds, ds.root)
 
 
 def read_samples(samples, tree="Events", step=200_000, threads=0, rdf_compatible=False, remote_strategy=0, retries=3,
-                 retry_delay=10.0):
+                 retry_delay=10.0, timeout=30.0, uproot_options=None):
     """a Frame over several samples: {name: {"files": ..., "tree": ..., "step": ..., constant: value, ...}} (tree and
     step default to the arguments; every other key is a constant column of that sample: xs, is_data, ...).
 
@@ -80,8 +87,10 @@ def read_samples(samples, tree="Events", step=200_000, threads=0, rdf_compatible
                       histogram / sum weights it is applied at the end of the same pass, else (a selection, a written
                       column) it needs a pass of its own before (with a warning)
     A chunk never mixes samples. A branch missing from a sample's files is an error when that sample's chunks need it
-    (a selection does not avoid the read): give it as a constant of that sample."""
-    ds = SamplesDataset(samples, tree, step, threads, rdf_compatible, remote_strategy, retries, retry_delay)
+    (a selection does not avoid the read): give it as a constant of that sample.
+    files, remote_strategy, retries, retry_delay, timeout, uproot_options: as read_root (replica lists too)"""
+    ds = SamplesDataset(samples, tree, step, threads, rdf_compatible, remote_strategy, retries, retry_delay, timeout,
+                        uproot_options)
     return Frame(ds, ds.root)
 
 

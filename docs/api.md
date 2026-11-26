@@ -37,25 +37,29 @@ Contents: [Reading](#reading) · [Columns](#columns-and-expressions) · [Collect
 
 ```python
 aks.read_root(files, tree="Events", step=200_000, entry_start=0, entry_stop=None, threads=0, friends=None,
-              rdf_compatible=False, remote_strategy=0, retries=3, retry_delay=10.0) -> Frame
+              rdf_compatible=False, remote_strategy=0, retries=3, retry_delay=10.0, timeout=30.0,
+              uproot_options=None) -> Frame
 ```
 
 | argument | |
 |---|---|
-| `files` | a path, a glob, a list of them, or `"file.root:tree"` |
+| `files` | a path, a glob, a list of them, or `"file.root:tree"`; an entry that is itself a list holds replicas of one file (see [below](#replicas)) |
 | `step` | entries per chunk: memory scales with it (a few hundred thousand is typical) |
 | `entry_start`, `entry_stop` | entry range (applied when there is a single file) |
 | `threads` | uproot decompression threads per process |
 | `friends` | `{tree name: files}` friend trees (as `TTree::AddFriend`): one file per main file, same order, same entries; their branches become columns. `aks.Friend(files, match={"gj_event": "event"})` also checks, on every chunk, that the friend branch equals the main-tree branch |
 | `rdf_compatible` | evaluate as C++ / RDataFrame does (see [below](#reproducing-rdataframe-bit-for-bit)) |
 | `remote_strategy`, `retries`, `retry_delay` | what to do with chunks that cannot be read (see [below](#unreadable-chunks-remote-files)) |
+| `timeout` | seconds per request to the file server (see [below](#timeout)); `None`: uproot's default |
+| `uproot_options` | more `uproot.open` options, e.g. `{"handler": ..., "num_workers": ...}` (the timeout goes as `timeout=`) |
 
 Only the branches that the booked results need are read. `df.branches`, `df.dtypes` and `df.collections` describe
 the tree; `df.entry` is the entry number in its file (`rdfentry_`).
 
 ### Unreadable chunks (remote files)
 
-A chunk can fail to read (an xrootd timeout, a broken basket), or a file to open. `remote_strategy` decides:
+A chunk can fail to read (an xrootd timeout, a broken basket), or a file to open. `remote_strategy` decides
+(after every [replica](#replicas) of the file was tried):
 
 | | |
 |---|---|
@@ -85,8 +89,35 @@ before it is processed, so a failure never leaves a chunk half-filled (the excep
 middle of a chunk, which is read in bulk from the second chunk on, raises); a skipped chunk of data is missing
 luminosity, so check `aks.last_failed` before using the result.
 
-**Several samples**: `aks.read_samples(samples, tree="Events", step=200_000, threads=0, rdf_compatible=False,
-remote_strategy=0, retries=3, retry_delay=10.0)` is one frame over several samples:
+### Timeout
+
+Every file is opened with `timeout=30` seconds (`read_root(timeout=...)`, `read_samples(timeout=...)`), so that a
+server that stops answering raises, and `remote_strategy` applies, instead of hanging: without one, an XRootD request
+waits for the client's own limit, 30 minutes. The limit is per request (an open, a stat, one vector read), not per
+chunk: over a slow link with large chunks a single vector read can take longer, so raise it there. A timed-out read
+carries the hint in its error (and in the records). `timeout=None` gives uproot's default.
+
+### Replicas
+
+An entry of `files` that is a list holds alternative URLs of one file (the CMS filesets list several per file):
+
+```python
+files = [["root://cmsdcadisk.fnal.gov//store/.../a.root", "root://eoscms.cern.ch//store/.../a.root"], ...]
+df = aks.read_root(files, remote_strategy="retry")
+```
+
+The first URL names the file everywhere (records, samples, friends, output parts). A failed open or read moves on to
+the next replica at once (no `retry_delay`), and a replica that works stays in use for the later chunks of that
+process; a chunk fails, and `remote_strategy` applies, only when every replica failed (`retry` rounds go through them
+again). The records keep the list (`"replicas"`), so `read_root(aks.last_failed)` tries them all again. Replicas must
+be identical: one with another number of entries than the one counted first raises `aks.ReplicaMismatch`, whatever
+the strategy. Lists of replicas work in `read_samples` files and in friends too; glob patterns are not expanded in
+them.
+
+### Several samples
+
+`aks.read_samples(samples, tree="Events", step=200_000, threads=0, rdf_compatible=False,
+remote_strategy=0, retries=3, retry_delay=10.0, timeout=30.0, uproot_options=None)` is one frame over several samples:
 
 ```python
 df = aks.read_samples({
